@@ -700,14 +700,8 @@ def main():
     st.caption("Concentracion (ppm, %) · CE (dS/m) · Compatibilidad · pH · "
                "y dosificacion inversa (objetivo -> receta).")
     volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
-    modo = st.radio("Modo de trabajo",
-                    ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
-                    horizontal=True)
     st.divider()
-    if modo.startswith("Directo"):
-        modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua)
-    else:
-        modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+    modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     st.divider()
     st.caption("La CE usa factores empiricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
