@@ -31,9 +31,13 @@ import streamlit as st
 # ===========================================================================
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1ICkXbGILdm0SAw-ubaHs6xdfEkBCdjinNP4P8YkiOxQ/edit?usp=sharing"
 
+# Logo UCHILECREA embebido (SVG en base64), para no depender de archivos externos
+LOGO_UCHILECREA_B64 = "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgdmVyc2lvbj0iMS4wIgogICB3aWR0aD0iODc2LjExNjMzIgogICBoZWlnaHQ9IjM1MS4xOTg3NiIKICAgdmlld0JveD0iMCAwIDg3Ni4xMTYzMyAzNTEuMTk4NzYiCiAgIHByZXNlcnZlQXNwZWN0UmF0aW89InhNaWRZTWlkIgogICBpZD0ic3ZnMjYiCiAgIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgeG1sbnM6c3ZnPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPGRlZnMKICAgICBpZD0iZGVmczI2IiAvPgogIDxnCiAgICAgZmlsbD0iIzBhOTM1NCIKICAgICBpZD0iZzExIgogICAgIHRyYW5zZm9ybT0ibWF0cml4KDEuNDE0OTMxMiwwLDAsMS40MDg3NTQ2LC0yNzIuMDE5NDQsLTIxNy43NzI1MSkiPgogICAgPHBhdGgKICAgICAgIGQ9Im0gNTM5LjYyLDQwMy40OCBjIC05LjQzLC0xLjYgLTIwLjk2LC04Ljc4IC0yNy4yLC0xNy4wNCAtMTEuMDIsLTE0LjU4IC0xMS43NSwtMzIuMTMgLTIuMSwtNTIgMy43NywtNy45OCA3LjE4LC0xMi44NCAxNS44MSwtMjIuOTIgMy40OCwtMy45OSA3LjE4LC05LjA3IDguMjcsLTExLjI0IGwgMS45NiwtMy45OSB2IC0yMy45MyBjIDAsLTI3LjcxIC0wLjI5LC0yOS4zNyAtNC40MiwtMjkuMzcgLTYuNDYsMCAtMTkuNTEsLTcuNjIgLTI4LjU4LC0xNi42OCAtNi4wOSwtNi4wMiAtNy40LC03LjgzIC0xMC43MywtMTQuNTEgLTIuMzksLTQuODYgLTQuNzEsLTExLjAyIC02LjMxLC0xNy4wNCAtNS4wOCwtMTguNjQgLTcuMDQsLTI0LjggLTEwLjE1LC0zMS45MSAtMS45NiwtNC4zNSAtMi45NywtNy40NyAtMi42MSwtNy44MyAxLjIzLC0xLjIzIDUuNDQsMC4xNSAxMi40OCw0LjEzIDE3Ljc3LDEwLjAxIDQxLjQ5LDI5Ljk1IDQ4LjE2LDQwLjU0IDEuMjMsMS44OSAyLjM5LDMuNDEgMi42MSwzLjQxIDAuMjIsMCAwLjY1LC00LjM1IDAuOTQsLTkuNTcgMC45NCwtMTYuMjUgMi4xOCwtMjcuNjMgMy4xMiwtMjcuOTIgMS4yMywtMC40NCAxLjUyLDUuMDggMi4zOSw0MS40OSAxLjAyLDQxLjc4IDMuMjYsOTMuNDIgNC4zNSw5Ny43NyAxLjMxLDQuOTMgNC43OSw4LjQ5IDE1LjgxLDE1Ljk2IDExLjg5LDcuOTggMTguNDIsMTQgMjIuMTIsMjAuMTYgNi43NSwxMS40NiA4LjYzLDI4LjA3IDQuMjEsMzYuODQgLTIuMDMsMy45MiAtNy42OSw4Ljg1IC0xMy44NSwxMS45NyAtMi45NywxLjYgLTguNjMsNC45MyAtMTIuNDgsNy40NyAtMy44NCwyLjYxIC04LjU2LDUuMTUgLTEwLjQ0LDUuNzMgLTMuMTksMC45NCAtOS4yOCwxLjE2IC0xMy4zNSwwLjUxIHoiCiAgICAgICBpZD0icGF0aDUiIC8+CiAgICA8cGF0aAogICAgICAgZD0ibSA1ODIuMTksMjM4LjMzIGMgLTExLjI0LC00LjA2IC0xNC40MywtMTYuODMgLTcuNjksLTMwLjMyIDIuMDMsLTQuMjEgMTMuMTMsLTIwLjg5IDEzLjc4LC0yMC44OSAwLjg3LDAgOC4yNywxMC45NSAxMS43NSwxNy40OCA1LjI5LDkuODYgNi42NywxNi43NSA0LjcxLDIzLjI4IC0xLjAyLDMuNTUgLTUuODcsOS4xNCAtOS4wNywxMC40NCAtMi45NywxLjMxIC05Ljg2LDEuMjMgLTEzLjQ5LDAgeiIKICAgICAgIGlkPSJwYXRoMTAiIC8+CiAgICA8cGF0aAogICAgICAgZD0ibSA1NjguOTksMTkyLjY0IGMgLTUuMjIsLTIuMzIgLTYuODksLTguMjcgLTQuMDYsLTE0LjY1IDIuMTgsLTQuOTMgNi43NSwtMTEuODkgNy44MywtMTEuODkgMS44MSwwIDcuNjksMTAuMDggOC44NSwxNS4yMyAwLjg3LDMuOTIgMCw2Ljg5IC0yLjk3LDkuOTQgLTIuNjEsMi42OCAtNS43MywzLjEyIC05LjY1LDEuMzggeiIKICAgICAgIGlkPSJwYXRoMTEiIC8+CiAgPC9nPgogIDxnCiAgICAgZmlsbD0iIzA3ODE0OSIKICAgICBpZD0iZzI2IgogICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjEiCiAgICAgdHJhbnNmb3JtPSJtYXRyaXgoMS40MTQ5MzEyLDAsMCwxLjQwODc1NDYsLTI3Mi4wMTk0NCwtMjE3Ljc3MjUxKSI+CiAgICA8cGF0aAogICAgICAgZD0ibSA1MzQuMjUsMjM5LjcxIGMgLTAuMjksLTEuNTIgLTEuMTYsLTMuNyAtMS44MSwtNC43MSAtMC43MywtMS4wMiAtMi45NywtNS4yMiAtNS4wOCwtOS40MyAtMy43LC03LjU0IC0xMi44NCwtMjEuMDMgLTIwLjE2LC0yOS44OCAtMy44NCwtNC41IC00LjY0LC02LjM4IC0yLjksLTYuMzggMS41MiwwIDEzLjQ5LDEzLjA2IDE4LjQyLDIwLjA5IDYuMTYsOC45MiAxMC4wMSwxNy4xOSAxMS40NiwyNS4xIDAuNjUsMy40OCAxLjA5LDYuNzUgMC44Nyw3LjI1IC0wLjE1LDAuNTEgLTAuNTEsLTAuNDQgLTAuOCwtMi4wMyB6IgogICAgICAgaWQ9InBhdGgyNiIKICAgICAgIHN0eWxlPSJmaWxsOiNmZmZmZmY7ZmlsbC1vcGFjaXR5OjEiIC8+CiAgPC9nPgogIDx0ZXh0CiAgICAgeG1sOnNwYWNlPSJwcmVzZXJ2ZSIKICAgICBzdHlsZT0iZm9udC1zaXplOjE5OC4yMDRweDtmb250LWZhbWlseTpBcmlhbDstaW5rc2NhcGUtZm9udC1zcGVjaWZpY2F0aW9uOkFyaWFsO3RleHQtYWxpZ246c3RhcnQ7d3JpdGluZy1tb2RlOmxyLXRiO2RpcmVjdGlvbjpsdHI7dGV4dC1hbmNob3I6c3RhcnQ7ZmlsbDojMGE5MzU0O2ZpbGwtb3BhY2l0eToxO3N0cm9rZS13aWR0aDoyLjA2NDYiCiAgICAgeD0iLTE0LjMyMzMzNiIKICAgICB5PSIzMjAuNTQ5MzUiCiAgICAgaWQ9InRleHQyNyIKICAgICB0cmFuc2Zvcm09InNjYWxlKDAuOTE4OTA4NDQsMS4wODgyNDc3KSI+PHRzcGFuCiAgICAgICBpZD0idHNwYW4yNyIKICAgICAgIHg9Ii0xNC4zMjMzMzYiCiAgICAgICB5PSIzMjAuNTQ5MzUiCiAgICAgICBzdHlsZT0iZm9udC1zdHlsZTpub3JtYWw7Zm9udC12YXJpYW50Om5vcm1hbDtmb250LXdlaWdodDpub3JtYWw7Zm9udC1zdHJldGNoOm5vcm1hbDtmb250LXNpemU6MTk4LjIwNHB4O2ZvbnQtZmFtaWx5OmNhbGlicmk7LWlua3NjYXBlLWZvbnQtc3BlY2lmaWNhdGlvbjpjYWxpYnJpO3N0cm9rZS13aWR0aDoyLjA2NDYiPjx0c3BhbgogICBzdHlsZT0iZm9udC1zdHlsZTpub3JtYWw7Zm9udC12YXJpYW50Om5vcm1hbDtmb250LXdlaWdodDpub3JtYWw7Zm9udC1zdHJldGNoOm5vcm1hbDtmb250LXNpemU6MTk4LjIwNHB4O2ZvbnQtZmFtaWx5OmNhbGlicmk7LWlua3NjYXBlLWZvbnQtc3BlY2lmaWNhdGlvbjpjYWxpYnJpO2ZpbGw6IzI0NzFhZjtmaWxsLW9wYWNpdHk6MC45OTYwNzg7c3Ryb2tlLXdpZHRoOjIuMDY0NiIKICAgaWQ9InRzcGFuMjgiPnVjaGlsZTx0c3BhbgogICBzdHlsZT0iZm9udC1zaXplOjE3My4zMzNweCIKICAgaWQ9InRzcGFuMjkiPiAgPC90c3Bhbj48L3RzcGFuPjx0c3BhbgogICBzdHlsZT0iZm9udC1zaXplOjE3My4zMzNweCIKICAgaWQ9InRzcGFuMzAiPiAgPC90c3Bhbj5jcmVhPC90c3Bhbj48L3RleHQ+Cjwvc3ZnPgo="
+
 CFG = {
     "titulo": "Plataforma de Disolución de Fertilizantes",
     "volumen_default_L": 1000.0,
+    "razon_iny_default": 100,
     "k_tds": 640.0,
     "eq": {"Ca": 20.04, "Mg": 12.15, "K": 39.10, "Na": 23.0,
            "N": 14.0, "S": 16.03, "P": 30.97, "Cl": 35.45, "HCO3": 61.0},
@@ -463,7 +467,7 @@ def exportar_excel(df_aportes, t, alertas, estanques, bal, df_objetivo=None) -> 
     return buf.getvalue()
 
 
-def analizar_y_mostrar(sel, catalogo, volumen_L, riego, ce_agua, hco3_agua,
+def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
                        df_objetivo=None):
     if "N_pct" not in sel.columns:
         sel = sel.merge(catalogo, on="nombre", how="left")
@@ -474,19 +478,20 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, riego, ce_agua, hco3_agua,
     estanques = asignar_estanques(sel)
     ph_tend = estimar_ph_tendencia(sel)
     ce_madre = t["CE"]
-    ce_aplicada = ce_agua + ce_madre   # la solución preparada es la que se aplica
+    factor = 1.0 / razon
+    ce_final = ce_agua + ce_madre / razon   # solución diluida en el gotero
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("CE de las sales", f"{ce_madre:.2f} dS/m")
-    c2.metric("CE solución aplicada", f"{ce_aplicada:.2f} dS/m",
-              help=f"CE del agua ({ce_agua:.2f}) + CE aportada por las sales")
+    c1.metric("CE estanque madre", f"{ce_madre:.2f} dS/m")
+    c2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m",
+              help=f"CE del agua ({ce_agua:.2f}) + CE madre ÷ {razon}")
     c3.metric("Concentración total", f"{t['pct_pv']:.2f} % p/v")
     c4.metric("Tendencia de pH", ph_tend)
 
     sev_max = max((a[0] for a in alertas),
                   key=lambda s: {"OK": 0, "INFO": 1, "MEDIA": 2, "ALTA": 3}.get(s, 0))
     if sev_max == "ALTA":
-        st.error("Hay incompatibilidades de severidad ALTA (ver pestana Compatibilidad).")
+        st.error("Hay incompatibilidades de severidad ALTA (ver pestaña Compatibilidad).")
     elif sev_max == "MEDIA":
         st.warning("Hay advertencias de compatibilidad de severidad MEDIA.")
 
@@ -494,17 +499,12 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, riego, ce_agua, hco3_agua,
                     "Solubilidad", "pH / bicarbonatos", "Balance iónico"])
     with tabs[0]:
         st.markdown("**Concentración de nutrientes (ppm = mg/L):**")
-        nut = pd.DataFrame({"Nutriente": ELEMENTOS,
-                            "Concentración (ppm)": [t[e] for e in ELEMENTOS]})
-        if riego:
-            nut[f"Dosis aplicada (kg/ha)"] = [t[e] * riego / 1000.0 for e in ELEMENTOS]
+        nut = pd.DataFrame({
+            "Nutriente": ELEMENTOS,
+            "Estanque madre (ppm)": [t[e] for e in ELEMENTOS],
+            f"Final 1:{razon} (ppm)": [t[e] * factor for e in ELEMENTOS]})
         st.dataframe(nut.round(2), use_container_width=True, hide_index=True)
-        if riego:
-            ha = (volumen_L / 1000.0) / riego if riego else 0
-            st.caption(f"Dosis (kg/ha) = ppm × {riego:g} m³/ha ÷ 1000. "
-                       f"Una carga del estanque ({volumen_L:g} L) cubre {ha:.2f} ha "
-                       f"a {riego:g} m³/ha.")
-        st.bar_chart(nut.set_index("Nutriente")["Concentración (ppm)"])
+        st.bar_chart(nut.set_index("Nutriente")["Estanque madre (ppm)"])
         with st.expander("Equivalente en óxidos (P2O5, K2O, CaO, MgO)"):
             st.dataframe(pd.DataFrame({
                 "Forma": ["P2O5", "K2O", "CaO", "MgO"],
@@ -598,16 +598,19 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, riego, ce_agua, hco3_agua,
 
 def sidebar_config():
     with st.sidebar:
+        st.markdown(
+            f'<div style="text-align:center;margin-bottom:0.5rem;">'
+            f'<img src="data:image/svg+xml;base64,{LOGO_UCHILECREA_B64}" '
+            f'style="width:78%;max-width:220px;"/></div>',
+            unsafe_allow_html=True)
+        st.divider()
         st.header("Configuración", anchor=False)
         volumen_L = st.number_input("Capacidad del estanque (L)", min_value=1.0,
                                     value=CFG["volumen_default_L"], step=50.0)
-        usar_riego = st.toggle("Calcular dosis por hectárea", value=False,
-                               help="Activa para ver la dosis aplicada (kg/ha) según la "
-                                    "lámina de riego.")
-        riego = None
-        if usar_riego:
-            riego = st.number_input("Riego (m³/ha)", min_value=0.1, value=30.0, step=1.0,
-                                    help="Lámina aplicada. Dosis (kg/ha) = ppm × m³/ha ÷ 1000.")
+        razon = st.number_input("Razón de inyección 1:R", min_value=1,
+                                value=CFG["razon_iny_default"], step=1,
+                                help="Por cada 1 L de solución madre, R litros de agua de "
+                                     "riego. Usa 1 si el estanque es la solución final.")
         st.divider()
         st.subheader("Agua de riego", anchor=False)
         ce_agua = st.number_input("CE del agua (dS/m)", min_value=0.0, value=0.0, step=0.1)
@@ -616,7 +619,7 @@ def sidebar_config():
         st.divider()
         st.subheader("Catálogo", anchor=False)
         catalogo = cargar_catalogo_fija()
-    return volumen_L, riego, ce_agua, hco3_agua, catalogo
+    return volumen_L, razon, ce_agua, hco3_agua, catalogo
 
 
 def cargar_catalogo_fija() -> pd.DataFrame:
@@ -639,7 +642,7 @@ def cargar_catalogo_fija() -> pd.DataFrame:
         return cargar_catalogo_default()
 
 
-def modo_directo(catalogo, volumen_L, riego, ce_agua, hco3_agua):
+def modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua):
     st.subheader("Fertilizantes y dosis", anchor=False)
     unidad = st.radio("Unidad de dosis", ["kg", "g"], horizontal=True)
     st.caption(f"Elige fertilizante y dosis en **{unidad}** para **{volumen_L:g} L**.")
@@ -659,11 +662,11 @@ def modo_directo(catalogo, volumen_L, riego, ce_agua, hco3_agua):
         return
     sel["gramos"] = sel["dosis"].fillna(0) * (1000.0 if unidad == "kg" else 1.0)
     st.subheader("Resultados", anchor=False)
-    analizar_y_mostrar(sel[["nombre", "gramos"]], catalogo, volumen_L, riego,
+    analizar_y_mostrar(sel[["nombre", "gramos"]], catalogo, volumen_L, razon,
                        ce_agua, hco3_agua)
 
 
-def modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua):
+def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
     st.subheader("Objetivo (ppm)", anchor=False)
     st.caption("Objetivo de concentración en **el estanque** (la solución que prepararás). "
                "Deja 0 para no exigir ese nutriente (igual se reporta si aparece como "
@@ -692,19 +695,19 @@ def modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua):
         help="Tope de conductividad que la receta NO debe superar. 0 = sin límite.")
     refiere = cce2.radio(
         "La CE crítica se refiere a:",
-        ["Solución aplicada (agua + sales)", "Solo las sales"], horizontal=True,
-        help="Aplicada = CE del agua + CE de las sales (lo que recibe la planta). "
-             "Solo las sales = el aporte de la receta, sin contar el agua.")
+        ["Solución final (gotero)", "Estanque madre"], horizontal=True,
+        help="Final = lo que recibe la planta (CE agua + CE madre ÷ R). "
+             "Madre = la solución concentrada del estanque.")
 
-    # Traducir el tope a un límite sobre la CE aportada por las sales (lo que ve el solver)
+    # Traducir el tope a un límite sobre la CE del ESTANQUE MADRE (lo que ve el solver)
     ce_cap_madre = None
     if ce_crit > 0:
-        if refiere.startswith("Solución aplicada"):
-            ce_cap_madre = ce_crit - ce_agua
+        if refiere.startswith("Solución final"):
+            ce_cap_madre = (ce_crit - ce_agua) * razon
             if ce_cap_madre <= 0:
                 st.error(f"La CE del agua ({ce_agua:.2f}) ya iguala o supera la CE crítica "
-                         f"({ce_crit:.2f}). Sin margen para fertilizar: sube la CE crítica "
-                         "o reduce la CE del agua.")
+                         f"final ({ce_crit:.2f}). Sin margen para fertilizar: sube la CE "
+                         "crítica o reduce la CE del agua.")
                 return
         else:
             ce_cap_madre = ce_crit
@@ -747,11 +750,11 @@ def modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua):
     # --- Estado del tope de CE ---
     if res.get("ce_tope"):
         ce_madre = res["ce_madre"]
-        ce_aplicada = ce_agua + ce_madre
+        ce_final = ce_agua + ce_madre / razon
         m1, m2, m3 = st.columns(3)
-        m1.metric("CE de las sales", f"{ce_madre:.2f} dS/m")
-        m2.metric("CE solución aplicada", f"{ce_aplicada:.2f} dS/m")
-        etiqueta = "aplicada" if refiere.startswith("Solución aplicada") else "sales"
+        m1.metric("CE estanque madre", f"{ce_madre:.2f} dS/m")
+        m2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m")
+        etiqueta = "final" if refiere.startswith("Solución final") else "madre"
         m3.metric(f"CE crítica ({etiqueta})", f"{ce_crit:.2f} dS/m")
         if res["ce_limitada"]:
             # Cuantificar el compromiso real: cuanto bajaron los nutrientes objetivo
@@ -783,7 +786,7 @@ def modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua):
                f"· optimizados: {', '.join(res['nut'])}{cap_txt}.")
     st.divider()
     st.subheader("Análisis de la receta", anchor=False)
-    analizar_y_mostrar(receta, catalogo, volumen_L, riego, ce_agua, hco3_agua,
+    analizar_y_mostrar(receta, catalogo, volumen_L, razon, ce_agua, hco3_agua,
                        df_objetivo=df_obj)
 
 
@@ -810,15 +813,15 @@ def main():
     st.title(CFG["titulo"], anchor=False)
     st.caption("Calcula concentraciones, CE, compatibilidad y pH. "
                "Modo directo (dosis → resultado) o inverso (objetivo → receta).")
-    volumen_L, riego, ce_agua, hco3_agua, catalogo = sidebar_config()
+    volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
     modo = st.radio("Modo de trabajo",
                     ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
                     horizontal=True)
     st.divider()
     if modo.startswith("Directo"):
-        modo_directo(catalogo, volumen_L, riego, ce_agua, hco3_agua)
+        modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     else:
-        modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua)
+        modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     st.divider()
     st.caption("La CE usa factores empíricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
