@@ -157,8 +157,20 @@ def validar_catalogo(df: pd.DataFrame):
     num = ["N_pct", "P_pct", "K_pct", "Ca_pct", "Mg_pct", "S_pct", "Cl_pct",
            "fracN_NO3", "fracN_NH4", "fracN_ureico",
            "solubilidad_g_L", "ce_factor", "meq_H_g", "densidad"]
+    def _to_num(series):
+        return pd.to_numeric(
+            series.astype(str)
+                  .str.replace(",", ".", regex=False)
+                  .replace({"nan": np.nan, "None": np.nan, "": np.nan}),
+            errors="coerce"
+        )
+
     for c in num:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        df[c] = _to_num(df[c])
+
+    for c in ["N_pct", "P_pct", "K_pct", "Ca_pct", "Mg_pct", "S_pct", "Cl_pct",
+              "fracN_NO3", "fracN_NH4", "fracN_ureico", "ce_factor", "meq_H_g"]:
+        df[c] = df[c].fillna(0.0)
     for c in ["sulfato", "fosfato", "cloruro", "es_acido", "es_quelato_Fe"]:
         df[c] = df[c].astype(str).str.lower().isin(
             ["true", "1", "si", "sí", "x", "verdadero"])
@@ -316,7 +328,11 @@ def resolver_receta_objetivo(catalogo, objetivos, volumen_L, disponibles,
     A = np.zeros((len(nut), len(sub)))
     for i, el in enumerate(nut):
         A[i, :] = sub[f"{el}_pct"].values.astype(float) * 10.0 / volumen_L
-    b = np.array([float(objetivos[el]) for el in nut])
+    b = np.array([float(objetivos[el]) for el in nut], dtype=float)
+
+    if not np.isfinite(A).all() or not np.isfinite(b).all():
+        raise ValueError("El catálogo u objetivos contienen NaN/inf tras la lectura.")
+
     w = 1.0 / b
     Aw, bw = A * w[:, None], b * w
 
