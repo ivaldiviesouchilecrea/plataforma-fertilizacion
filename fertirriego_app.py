@@ -9,8 +9,8 @@
                 fertilizante), resuelta con minimos cuadrados no negativos
                 (NNLS) ponderados por error relativo.
 
- Catalogo: se lee desde una Google Sheet PUBLICA fija (constante SHEET_URL).
-           Si no esta configurada o falla, usa un catalogo interno de respaldo.
+ Catálogo: se lee desde una Google Sheet PUBLICA fija (constante SHEET_URL).
+           Si no está configurada o falla, usa un catálogo interno de respaldo.
  Ejecutar:  streamlit run fertirriego_app.py
  Requiere:  pip install streamlit pandas openpyxl scipy
 =============================================================================
@@ -70,7 +70,7 @@ def cargar_catalogo_default() -> pd.DataFrame:
         ("Nitrato de amonio", "NH4NO3", "solido",
          34.0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, 0, 1900, 1.50, "acida",
          False, False, False, False, False, 0, None,
-         "Muy soluble. Acidificante por nitrificacion del NH4."),
+         "Muy soluble. Acidificante por nitrificación del NH4."),
         ("Sulfato de amonio", "(NH4)2SO4", "solido",
          21.0, 0, 0, 0, 0, 24.0, 0, 0, 1.0, 0, 750, 1.80, "acida",
          True, False, False, False, False, 0, None,
@@ -82,11 +82,11 @@ def cargar_catalogo_default() -> pd.DataFrame:
         ("Fosfato monoamonico (MAP)", "NH4H2PO4", "solido",
          12.0, 26.6, 0, 0, 0, 0, 0, 0, 1.0, 0, 400, 0.90, "acida",
          False, True, False, False, False, 0, None,
-         "Aporta fosfato -> Estanque B. pH de solucion ~4.5."),
+         "Aporta fosfato -> Estanque B. pH de solución ~4.5."),
         ("Fosfato monopotasico (MKP)", "KH2PO4", "solido",
          0, 22.7, 28.2, 0, 0, 0, 0, 0, 0, 0, 230, 0.70, "acida",
          False, True, False, False, False, 0, None,
-         "Aporta fosfato -> Estanque B. pH de solucion ~4.5."),
+         "Aporta fosfato -> Estanque B. pH de solución ~4.5."),
         ("Sulfato de potasio", "K2SO4", "solido",
          0, 0, 41.5, 0, 0, 18.0, 0, 0, 0, 0, 110, 1.70, "neutra",
          True, False, False, False, False, 0, None,
@@ -103,14 +103,14 @@ def cargar_catalogo_default() -> pd.DataFrame:
          0, 0, 49.8, 0, 0, 0, 47.6, 0, 0, 0, 340, 1.70, "neutra",
          False, False, True, False, False, 0, None,
          "Alto Cl: cuidado en cultivos sensibles a cloruro."),
-        ("Acido fosforico 85%", "H3PO4", "liquido",
+        ("Ácido fosforico 85%", "H3PO4", "liquido",
          0, 26.8, 0, 0, 0, 0, 0, 0, 0, 0, None, 1.00, "acida",
          False, True, False, True, False, 8.67, 1.685,
-         "Liquido. Anadir SIEMPRE el acido al agua. ~1 proton efectivo."),
-        ("Acido nitrico 65%", "HNO3", "liquido",
+         "Liquido. Añadir SIEMPRE el ácido al agua. ~1 proton efectivo."),
+        ("Ácido nitrico 65%", "HNO3", "liquido",
          14.4, 0, 0, 0, 0, 0, 0, 1.0, 0, 0, None, 1.20, "acida",
          False, False, False, True, False, 10.30, 1.39,
-         "Liquido corrosivo. Anadir SIEMPRE el acido al agua. EPP obligatorio."),
+         "Liquido corrosivo. Añadir SIEMPRE el ácido al agua. EPP obligatorio."),
         ("Quelato de hierro EDTA (Fe 6%)", "Fe-EDTA", "solido",
          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 900, 0.20, "neutra",
          False, False, False, False, True, 0, None,
@@ -118,7 +118,7 @@ def cargar_catalogo_default() -> pd.DataFrame:
         ("Quelato de hierro EDDHA (Fe 6%)", "Fe-EDDHA", "solido",
          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 900, 0.15, "neutra",
          False, False, False, False, True, 0, None,
-         "Fe 6%. Estable hasta pH ~9; ideal para aguas/suelos calcareos."),
+         "Fe 6%. Estable hasta pH ~9; ideal para aguas/suelos calcáreos."),
         ("Sulfato de manganeso", "MnSO4*H2O", "solido",
          0, 0, 0, 0, 0, 19.0, 0, 0, 0, 0, 700, 0.10, "neutra",
          True, False, False, False, False, 0, None,
@@ -127,7 +127,7 @@ def cargar_catalogo_default() -> pd.DataFrame:
          0, 0, 0, 0, 0, 11.0, 0, 0, 0, 0, 580, 0.10, "neutra",
          True, False, False, False, False, 0, None,
          "Zn 22%. Microelemento (dosis bajas). Aporta SO4."),
-        ("Acido borico", "H3BO3", "solido",
+        ("Ácido borico", "H3BO3", "solido",
          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50, 0.05, "acida",
          False, False, False, False, False, 0, None,
          "B 17%. Microelemento. Solubilidad baja en frio."),
@@ -239,20 +239,20 @@ def evaluar_compatibilidad(sel: pd.DataFrame) -> list:
                         f"Ca: {', '.join(ca)} + fosfatos: {', '.join(fosf)}. "
                         "Separar en estanques distintos (A / B)."))
     if mg and fosf:
-        alertas.append(("MEDIA", "Riesgo de precipitacion de fosfato de magnesio",
+        alertas.append(("MEDIA", "Riesgo de precipitación de fosfato de magnesio",
                         f"{', '.join(mg)} + {', '.join(fosf)}. Mayor riesgo a pH alto."))
     if quel and fosf:
-        alertas.append(("MEDIA", "Posible interaccion quelato de Fe + fosfato",
+        alertas.append(("MEDIA", "Posible interacción quelato de Fe + fosfato",
                         f"{', '.join(quel)} con {', '.join(fosf)}: vigilar pH."))
     if acid:
-        alertas.append(("INFO", "Manejo de acidos",
-                        f"{', '.join(acid)}: anadir SIEMPRE el acido sobre el agua, con EPP."))
+        alertas.append(("INFO", "Manejo de ácidos",
+                        f"{', '.join(acid)}: añadir SIEMPRE el ácido sobre el agua, con EPP."))
     if cl:
         alertas.append(("INFO", "Aporte de cloruro",
                         f"{', '.join(cl)}: revisar tolerancia del cultivo al Cl-."))
     if not alertas:
         alertas.append(("OK", "Sin incompatibilidades evidentes",
-                        "La combinacion no dispara reglas de precipitacion."))
+                        "La combinación no dispara reglas de precipitación."))
     return alertas
 
 
@@ -285,7 +285,7 @@ def estimar_ph_tendencia(sel: pd.DataFrame) -> str:
     if score < -5000:
         return "Acidificante"
     if score <= 5000:
-        return "Tendencia neutra"
+        return "Neutra"
     if score <= 50000:
         return "Basificante"
     return "Fuertemente basificante"
@@ -300,9 +300,9 @@ def neutralizacion_bicarbonatos(hco3_mg_L, volumen_L, meq_H_total) -> dict:
     elif residual_meq > 0.05 * hco3_meq:
         estado = "Sub-neutralizado: queda alcalinidad residual (pH alto)."
     elif residual_meq < -0.05 * hco3_meq:
-        estado = "Sobre-neutralizado: exceso de acido (riesgo de pH muy bajo)."
+        estado = "Sobre-neutralizado: exceso de ácido (riesgo de pH muy bajo)."
     else:
-        estado = "Neutralizacion ~completa de los bicarbonatos."
+        estado = "Neutralización ~completa de los bicarbonatos."
     return {"hco3_meq": hco3_meq, "H_meq": meq_H_total,
             "residual_meq": residual_meq, "residual_mg_L": residual_mg_L,
             "estado": estado}
@@ -311,10 +311,10 @@ def neutralizacion_bicarbonatos(hco3_mg_L, volumen_L, meq_H_total) -> dict:
 def resolver_receta_objetivo(catalogo, objetivos, volumen_L, disponibles,
                              ce_cap_madre=None):
     """Resuelve la receta (gramos por fertilizante) para acercarse a los objetivos
-    de ppm, sin masas negativas y, opcionalmente, sin superar una CE critica.
+    de ppm, sin masas negativas y, opcionalmente, sin superar una CE crítica.
 
     ce_cap_madre: CE maxima permitida en el estanque madre (dS/m). None o <=0 = sin
-    tope. Si NNLS ya cumple el tope, se devuelve esa solucion (es la optima). Si el
+    tope. Si NNLS ya cumple el tope, se devuelve esa solución (es la optima). Si el
     tope es activo, se reoptimiza con SLSQP minimizando el error relativo de los
     nutrientes sujeto a  CE(x) <= tope  y  x >= 0  (problema cuadratico convexo).
     """
@@ -402,7 +402,7 @@ def exportar_excel(df_aportes, t, alertas, estanques, bal, df_objetivo=None) -> 
             "Valor": [t["N"], t["P"], t["K"], t["Ca"], t["Mg"], t["S"], t["Cl"],
                       t["CE"], t["pct_pv"], t["P2O5"], t["K2O"]]})
         resumen.to_excel(w, sheet_name="Resumen", index=False)
-        cols = ["nombre", "gramos", "g_L"] + [f"{e}_ppm" for e in ELEMENTOS] + \
+        cols = ["nombre", "gramos", "g_L"] + [f"{e}_ppm" for e in ELEMENTOS] +\
                ["CE_parcial", "excede_solub"]
         df_aportes[cols].to_excel(w, sheet_name="Aportes", index=False)
         if df_objetivo is not None:
@@ -432,7 +432,7 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
     c1.metric("CE estanque madre", f"{ce_madre:.2f} dS/m")
     c2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m",
               help=f"CE agua ({ce_agua:.2f}) + CE madre / {razon}")
-    c3.metric("Concentracion total", f"{t['pct_pv']:.2f} % p/v")
+    c3.metric("Concentración total", f"{t['pct_pv']:.2f} % p/v")
     c4.metric("Tendencia de pH", ph_tend)
 
     sev_max = max((a[0] for a in alertas),
@@ -442,17 +442,17 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
     elif sev_max == "MEDIA":
         st.warning("Hay advertencias de compatibilidad de severidad MEDIA.")
 
-    tabs = st.tabs(["Nutrientes", "Compatibilidad y estanques",
-                    "Solubilidad", "pH / bicarbonatos", "Balance ionico"])
+    tabs = st.tabs(["Nutrientes", "Compatibilidad",
+                    "Solubilidad", "pH / bicarbonatos", "Balance iónico"])
     with tabs[0]:
-        st.markdown("**Concentracion de nutrientes (ppm = mg/L):**")
+        st.markdown("**Concentración de nutrientes (ppm = mg/L):**")
         nut = pd.DataFrame({
             "Nutriente": ELEMENTOS,
             "Estanque madre (ppm)": [t[e] for e in ELEMENTOS],
             f"Final 1:{razon} (ppm)": [t[e] * factor for e in ELEMENTOS]})
         st.dataframe(nut.round(2), use_container_width=True, hide_index=True)
         st.bar_chart(nut.set_index("Nutriente")["Estanque madre (ppm)"])
-        with st.expander("Equivalente en oxidos (P2O5, K2O, CaO, MgO)"):
+        with st.expander("Equivalente en óxidos (P2O5, K2O, CaO, MgO)"):
             st.dataframe(pd.DataFrame({
                 "Forma": ["P2O5", "K2O", "CaO", "MgO"],
                 "ppm (madre)": [t["P2O5"], t["K2O"], t["CaO"], t["MgO"]]}).round(1),
@@ -467,41 +467,41 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
         cols = ["nombre", "gramos", "g_L"] + [f"{e}_ppm" for e in ELEMENTOS]
         st.dataframe(df_ap[cols].round(2), use_container_width=True, hide_index=True)
     with tabs[1]:
-        st.markdown("**Alertas de compatibilidad / precipitacion:**")
+        st.markdown("**Alertas de compatibilidad / precipitación:**")
         colores = {"ALTA": st.error, "MEDIA": st.warning, "INFO": st.info, "OK": st.success}
         for sev, titulo, detalle in alertas:
             colores.get(sev, st.info)(f"**[{sev}] {titulo}** — {detalle}")
         st.divider()
-        st.markdown("**Separacion sugerida en estanques** "
-                    "(A = calcio/quelatos/nitratos · B = sulfatos/fosfatos/acidos):")
+        st.markdown("**Separación sugerida en estanques** "
+                    "(A = calcio/quelatos/nitratos · B = sulfatos/fosfatos/ácidos):")
         st.dataframe(estanques, use_container_width=True, hide_index=True)
         if (estanques["estanque"] == "CONFLICTO").any():
             st.warning("Algun fertilizante cae en A y B a la vez: revisa la receta.")
     with tabs[2]:
-        st.markdown("**Solubilidad** (dosis g/L vs limite a ~20 C):")
+        st.markdown("**Solubilidad** (dosis g/L vs límite a ~20 C):")
         sol = df_ap[["nombre", "g_L", "solubilidad_g_L", "excede_solub"]].rename(
             columns={"g_L": "dosis (g/L)", "solubilidad_g_L": "solubilidad (g/L)",
                      "excede_solub": "excede?"})
         st.dataframe(sol.round(1), use_container_width=True, hide_index=True)
         if df_ap["excede_solub"].any():
             st.error("Hay dosis que superan la solubilidad: no se disolveran del todo. "
-                     "Reduce dosis, sube volumen o usa agua mas tibia.")
+                     "Reduce dosis, sube volumen o usa agua más tibia.")
         else:
-            st.success("Todas las dosis estan por debajo del limite de solubilidad.")
+            st.success("Todas las dosis están por debajo del límite de solubilidad.")
     with tabs[3]:
         st.markdown(f"**Tendencia de pH de la mezcla:** {ph_tend}")
-        st.caption("Estimacion cualitativa ponderada por masa; el pH real debe medirse.")
+        st.caption("Estimación cualitativa ponderada por masa; el pH real debe medirse.")
         st.divider()
-        st.markdown("**Neutralizacion de bicarbonatos** (acidos vs HCO3- del agua):")
+        st.markdown("**Neutralización de bicarbonatos** (ácidos vs HCO3- del agua):")
         meq_H = float((df_ap["gramos"] * df_ap["meq_H_g"]).sum())
         res = neutralizacion_bicarbonatos(hco3_agua, volumen_L, meq_H)
         cc1, cc2, cc3 = st.columns(3)
         cc1.metric("meq HCO3- en estanque", f"{res['hco3_meq']:.0f}")
-        cc2.metric("meq H+ por acidos", f"{res['H_meq']:.0f}")
+        cc2.metric("meq H+ por ácidos", f"{res['H_meq']:.0f}")
         cc3.metric("HCO3- residual", f"{res['residual_mg_L']:.0f} mg/L")
         st.info(res["estado"])
     with tabs[4]:
-        st.markdown("**Balance ionico (meq/L)** — cationes vs aniones:")
+        st.markdown("**Balance iónico (meq/L)** — cationes vs aniones:")
         st.dataframe(bal.round(2), use_container_width=True, hide_index=True)
         cat = bal[bal["grupo"] == "cation"]["meq_L"].sum()
         ani = bal[bal["grupo"] == "anion"]["meq_L"].sum()
@@ -512,7 +512,7 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
         st.bar_chart(bal.set_index("ion")["meq_L"])
         st.caption("Un desbalance grande suele indicar un ion acompanante no contemplado.")
 
-    st.subheader("Exportar receta")
+    st.subheader("Exportar", anchor=False)
     st.download_button(
         "Descargar receta en Excel",
         data=exportar_excel(df_ap, t, alertas, estanques, bal, df_objetivo),
@@ -522,45 +522,45 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
 
 def sidebar_config():
     with st.sidebar:
-        st.header("Configuracion")
+        st.header("Configuración", anchor=False)
         volumen_L = st.number_input("Capacidad del estanque (L)", min_value=1.0,
                                     value=CFG["volumen_default_L"], step=50.0)
-        razon = st.number_input("Razon de inyeccion 1:R", min_value=1,
+        razon = st.number_input("Razón de inyección 1:R", min_value=1,
                                 value=CFG["razon_iny_default"], step=1,
-                                help="Usa 1 si el estanque es la solucion final aplicada.")
+                                help="Usa 1 si el estanque es la solución final aplicada.")
         st.divider()
-        st.subheader("Agua de riego (opcional)")
+        st.subheader("Agua de riego", anchor=False)
         ce_agua = st.number_input("CE del agua (dS/m)", min_value=0.0, value=0.0, step=0.1)
         hco3_agua = st.number_input("Bicarbonatos HCO3- (mg/L)", min_value=0.0,
                                     value=0.0, step=10.0)
         st.divider()
-        st.subheader("Catalogo de fertilizantes")
+        st.subheader("Catálogo", anchor=False)
         catalogo = cargar_catalogo_fija()
     return volumen_L, razon, ce_agua, hco3_agua, catalogo
 
 
 def cargar_catalogo_fija() -> pd.DataFrame:
-    """Carga el catalogo desde la Google Sheet fija (SHEET_URL).
-    Si la URL esta vacia o falla, usa el catalogo interno como respaldo.
+    """Carga el catálogo desde la Google Sheet fija (SHEET_URL).
+    Si la URL está vacía o falla, usa el catálogo interno como respaldo.
     Muestra el estado en la barra lateral."""
     if not SHEET_URL.strip():
-        st.info("Usando catalogo interno (la URL de la hoja aun no esta configurada).")
+        st.info("Usando catálogo interno (la URL de la hoja aún no está configurada).")
         return cargar_catalogo_default()
     try:
         df_g, faltan = validar_catalogo(cargar_desde_gsheet(SHEET_URL))
         if faltan:
             st.error("La hoja no tiene las columnas requeridas: " + ", ".join(faltan) +
-                     ". Se usa el catalogo interno.")
+                     ". Se usa el catálogo interno.")
             return cargar_catalogo_default()
-        st.success(f"Catalogo cargado desde Google Sheet: {len(df_g)} fertilizantes.")
+        st.success(f"Catálogo cargado desde Google Sheet: {len(df_g)} fertilizantes.")
         return df_g
     except Exception as e:
-        st.warning(f"No se pudo leer la hoja fija ({e}). Se usa el catalogo interno.")
+        st.warning(f"No se pudo leer la hoja fija ({e}). Se usa el catálogo interno.")
         return cargar_catalogo_default()
 
 
 def modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua):
-    st.subheader("Seleccion de fertilizantes y dosis")
+    st.subheader("Fertilizantes y dosis", anchor=False)
     unidad = st.radio("Unidad de dosis", ["kg", "g"], horizontal=True)
     st.caption(f"Elige fertilizante y dosis en **{unidad}** para **{volumen_L:g} L**.")
     base = pd.DataFrame({"nombre": pd.Series(dtype="str"),
@@ -578,13 +578,13 @@ def modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         st.info("Agrega al menos un fertilizante para ver resultados.")
         return
     sel["gramos"] = sel["dosis"].fillna(0) * (1000.0 if unidad == "kg" else 1.0)
-    st.subheader("Resultados")
+    st.subheader("Resultados", anchor=False)
     analizar_y_mostrar(sel[["nombre", "gramos"]], catalogo, volumen_L, razon,
                        ce_agua, hco3_agua)
 
 
 def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
-    st.subheader("Objetivo de la solucion (ppm de cada nutriente)")
+    st.subheader("Objetivo (ppm)", anchor=False)
     st.caption("Objetivo del **estanque madre**. Deja 0 para no exigir ese nutriente "
                "(igual se reporta si aparece como efecto colateral).")
     cols = st.columns(6)
@@ -593,37 +593,37 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         objetivos[el] = cols[i].number_input(
             f"{el}", min_value=0.0, value=float(CFG["objetivo_default"][el]),
             step=5.0, key=f"obj_{el}")
-    st.subheader("Fertilizantes disponibles para la formula")
+    st.subheader("Fertilizantes disponibles", anchor=False)
     opciones = sorted(catalogo["nombre"].tolist())
     default = [n for n in ferts_macro_por_defecto(catalogo) if n in opciones]
     disponibles = st.multiselect(
         "El solver elegira las cantidades solo entre estos:",
         options=opciones, default=default,
-        help="Por defecto se sugieren fuentes de macronutrientes (sin acidos ni micros).")
+        help="Por defecto se sugieren fuentes de macronutrientes (sin ácidos ni micros).")
     if not disponibles:
         st.info("Selecciona al menos un fertilizante disponible.")
         return
 
-    st.subheader("CE critica (limitante)")
+    st.subheader("CE crítica", anchor=False)
     cce1, cce2 = st.columns([1, 1.4])
     ce_crit = cce1.number_input(
-        "CE critica (dS/m)", min_value=0.0, value=0.0, step=0.1,
-        help="Tope de conductividad que la receta NO debe superar. 0 = sin limite.")
+        "CE crítica (dS/m)", min_value=0.0, value=0.0, step=0.1,
+        help="Tope de conductividad que la receta NO debe superar. 0 = sin límite.")
     refiere = cce2.radio(
-        "La CE critica se refiere a:",
-        ["Solucion final (gotero)", "Estanque madre"], horizontal=True,
-        help="Final = lo que recibe la planta (CE agua + CE madre / razon). "
-             "Madre = la solucion concentrada del estanque.")
+        "La CE crítica se refiere a:",
+        ["Solución final (gotero)", "Estanque madre"], horizontal=True,
+        help="Final = lo que recibe la planta (CE agua + CE madre / razón). "
+             "Madre = la solución concentrada del estanque.")
 
     # Traducir el tope a un limite sobre la CE del ESTANQUE MADRE (lo que ve el solver)
     ce_cap_madre = None
     if ce_crit > 0:
-        if refiere.startswith("Solucion final"):
+        if refiere.startswith("Solución final"):
             ce_cap_madre = (ce_crit - ce_agua) * razon
             if ce_cap_madre <= 0:
-                st.error(f"La CE del agua ({ce_agua:.2f}) ya iguala o supera la CE critica "
+                st.error(f"La CE del agua ({ce_agua:.2f}) ya iguala o supera la CE crítica "
                          f"final ({ce_crit:.2f}). Sin margen para fertilizar: sube la CE "
-                         "critica o reduce la CE del agua.")
+                         "crítica o reduce la CE del agua.")
                 return
         else:
             ce_cap_madre = ce_crit
@@ -640,7 +640,7 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         st.warning("El solver no asigno masa a ningun fertilizante. "
                    "Revisa que los elegidos aporten los nutrientes pedidos.")
         return
-    st.subheader("Receta propuesta")
+    st.subheader("Receta propuesta", anchor=False)
     vista = receta.copy()
     vista["kg"] = vista["gramos"] / 1000.0
     vista["g/L"] = vista["gramos"] / volumen_L
@@ -648,7 +648,7 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         vista.rename(columns={"nombre": "Fertilizante", "gramos": "g (total)"})
              .round({"g (total)": 1, "kg": 3, "g/L": 3}),
         use_container_width=True, hide_index=True)
-    st.subheader("Ajuste a los objetivos")
+    st.subheader("Ajuste a objetivos", anchor=False)
     show = df_obj[df_obj["optimizado"] | (df_obj["Objetivo (ppm)"] > 0)
                   | (df_obj["Logrado (ppm)"] > 1)].copy()
     st.dataframe(show.drop(columns=["optimizado"]).round(1),
@@ -670,35 +670,65 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         m1, m2, m3 = st.columns(3)
         m1.metric("CE madre lograda", f"{ce_madre:.2f} dS/m")
         m2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m")
-        etiqueta = "final" if refiere.startswith("Solucion final") else "madre"
-        m3.metric(f"CE critica ({etiqueta})", f"{ce_crit:.2f} dS/m")
+        etiqueta = "final" if refiere.startswith("Solución final") else "madre"
+        m3.metric(f"CE crítica ({etiqueta})", f"{ce_crit:.2f} dS/m")
         if res["ce_limitada"]:
-            st.warning(
-                f"La CE critica fue **activa**: limito la receta. Sin tope, la CE del "
-                f"estanque madre habria sido {res['ce_sin_tope']:.2f} dS/m. Para respetar "
-                "el limite, el solver redujo sales y por eso algunos nutrientes quedan por "
-                "debajo del objetivo (ver errores arriba). Sube la CE critica, el volumen "
-                "del estanque, o usa fuentes mas concentradas/menos salinas si necesitas "
-                "acercarte mas a los objetivos.")
+            # Cuantificar el compromiso real: cuanto bajaron los nutrientes objetivo
+            faltantes = [r for _, r in df_obj.iterrows()
+                         if r["optimizado"] and r["Error (%)"] is not None
+                         and r["Error (%)"] < -2]
+            recorte = (1 - ce_madre / res["ce_sin_tope"]) * 100 if res["ce_sin_tope"] else 0
+            msg = (f"La CE crítica está activa: sin ella la receta llegaría a "
+                   f"{res['ce_sin_tope']:.2f} dS/m, y se ajustó a {ce_madre:.2f} dS/m para "
+                   f"no superar el máximo de {ce_crit:.2f}.")
+            if faltantes:
+                detalle = ", ".join(f"{r['Nutriente']} {r['Error (%)']:+.0f}%"
+                                    for r in faltantes)
+                st.warning(
+                    msg + f" Esto obliga a un compromiso: para bajar la CE un {recorte:.0f}%, "
+                    f"estos nutrientes quedan bajo su objetivo: {detalle}. Si necesitas "
+                    "acercarte más, sube la CE crítica o el volumen del estanque, o usa "
+                    "fuentes menos salinas.")
+            else:
+                st.info(msg + " Aun así, todos los nutrientes objetivo se mantienen cerca "
+                        "de su meta (ver el ajuste de arriba).")
         else:
-            st.success("La receta cumple la CE critica con holgura (el tope no fue activo).")
+            st.success("La receta cumple la CE crítica con holgura (el tope no fue activo).")
 
     cap_txt = (f" · tope CE madre={res['ce_tope']:.2f} dS/m"
                f"{' (ACTIVO)' if res['ce_limitada'] else ''}") if res.get("ce_tope") else ""
-    metodo = "SLSQP con restriccion de CE" if res["ce_limitada"] else "NNLS"
+    metodo = "SLSQP con restricción de CE" if res["ce_limitada"] else "NNLS"
     st.caption(f"Solver: {metodo}, ponderado por error relativo · residuo={res['rnorm']:.3f} "
                f"· optimizados: {', '.join(res['nut'])}{cap_txt}.")
     st.divider()
-    st.subheader("Analisis de la receta resultante")
+    st.subheader("Análisis de la receta", anchor=False)
     analizar_y_mostrar(receta, catalogo, volumen_L, razon, ce_agua, hco3_agua,
                        df_objetivo=df_obj)
 
 
+_OCULTAR_UI = """
+<style>
+[data-testid="stToolbar"] {visibility: hidden; height: 0; position: fixed;}
+[data-testid="stDecoration"] {display: none;}
+[data-testid="stStatusWidget"] {display: none;}
+[data-testid="stHeaderActionElements"] {display: none !important;}
+.stDeployButton {display: none;}
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+a.stHeadingAnchor {display: none !important;}
+h1 a, h2 a, h3 a {display: none !important;}
+</style>
+"""
+
+
 def main():
-    st.set_page_config(page_title=CFG["titulo"], page_icon="🧪", layout="wide")
-    st.title(CFG["titulo"])
-    st.caption("Concentracion (ppm, %) · CE (dS/m) · Compatibilidad · pH · "
-               "y dosificacion inversa (objetivo -> receta).")
+    st.set_page_config(page_title=CFG["titulo"], page_icon="🧪", layout="wide",
+                       menu_items={"Get help": None, "Report a bug": None, "About": None})
+    st.markdown(_OCULTAR_UI, unsafe_allow_html=True)
+    st.title(CFG["titulo"], anchor=False)
+    st.caption("Calcula concentraciones, CE, compatibilidad y pH. "
+               "Modo directo (dosis → resultado) o inverso (objetivo → receta).")
     volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
     modo = st.radio("Modo de trabajo",
                     ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
@@ -709,9 +739,9 @@ def main():
     else:
         modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     st.divider()
-    st.caption("La CE usa factores empiricos por sal (g/L→dS/m); la urea no aporta CE. "
+    st.caption("La CE usa factores empíricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
-               "negativas, pero no impone compatibilidad: revisa la separacion A/B.")
+               "negativas, pero no impone compatibilidad: revisa la separación A/B.")
 
 
 if __name__ == "__main__":
