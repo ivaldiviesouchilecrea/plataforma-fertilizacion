@@ -34,7 +34,6 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1ICkXbGILdm0SAw-ubaHs6xdfEkB
 CFG = {
     "titulo": "Plataforma de Disolución de Fertilizantes",
     "volumen_default_L": 1000.0,
-    "razon_iny_default": 100,
     "k_tds": 640.0,
     "eq": {"Ca": 20.04, "Mg": 12.15, "K": 39.10, "Na": 23.0,
            "N": 14.0, "S": 16.03, "P": 30.97, "Cl": 35.45, "HCO3": 61.0},
@@ -256,20 +255,70 @@ def evaluar_compatibilidad(sel: pd.DataFrame) -> list:
     return alertas
 
 
-def asignar_estanques(sel: pd.DataFrame) -> pd.DataFrame:
-    def grupo(r):
-        a = (r["Ca_pct"] > 0) or r["es_quelato_Fe"]
-        b = r["sulfato"] or r["fosfato"] or r["es_acido"]
-        if a and not b:
-            return "A"
-        if b and not a:
-            return "B"
-        if a and b:
-            return "CONFLICTO"
-        return "A o B"
-    out = sel[["nombre"]].copy()
-    out["estanque"] = sel.apply(grupo, axis=1)
-    return out
+def asignar_estanques(sel: pd.DataFrame) -> dict:
+    """Propuesta de separación en dos estanques concentrados (A y B), con verificación.
+
+    Regla dura: el calcio y los quelatos de Fe NO deben compartir estanque concentrado
+    con sulfatos ni fosfatos (precipitan). Por eso:
+      A = fuentes de calcio, quelatos de Fe y nitratos compatibles.
+      B = sulfatos, fosfatos y ácidos.
+    Las sales neutras sin Ca/SO4/PO4 (KNO3, KCl, urea, Mg(NO3)2, microelementos sin
+    sulfato...) son flexibles y se colocan donde no generen incompatibilidad.
+
+    Devuelve un dict con: tabla (nombre/estanque/motivo), listas de cada estanque,
+    el estado verificado de A y B (errores graves y notas), y si hay conflicto interno.
+    """
+    filas = []
+    for _, r in sel.iterrows():
+        ca = bool(r["Ca_pct"] > 0)
+        fe = bool(r["es_quelato_Fe"])
+        su = bool(r["sulfato"])
+        ph = bool(r["fosfato"])
+        ac = bool(r["es_acido"])
+        if ca and (su or ph):
+            tk, motivo = "CONFLICTO", "el producto mezcla Ca con sulfato/fosfato"
+        elif ca:
+            tk, motivo = "A", "fuente de calcio"
+        elif fe:
+            tk, motivo = "A", "quelato de Fe (mantener lejos de fosfatos)"
+        elif su or ph or ac:
+            tk, motivo = "B", ("aporta sulfato" if su else
+                               "aporta fosfato" if ph else "ácido")
+        else:
+            tk, motivo = "flexible", "sal neutra (compatible en cualquiera)"
+        filas.append({"nombre": r["nombre"], "tk": tk, "motivo": motivo,
+                      "Ca": ca, "Mg": bool(r["Mg_pct"] > 0),
+                      "su": su, "ph": ph, "ac": ac, "fe": fe})
+    a = pd.DataFrame(filas)
+
+    # Colocar las flexibles: por defecto en A (no aportan Ca/SO4/PO4, seguras en cualquiera),
+    # salvo que en A ya exista calcio y la flexible sea... siguen siendo seguras igual.
+    a["estanque"] = a["tk"].replace({"flexible": "A"})
+
+    def verificar(tk):
+        sub = a[a["estanque"] == tk]
+        graves, notas = [], []
+        if sub.empty:
+            return {"estado": "vacío", "graves": [], "notas": []}
+        ca, su, ph = sub["Ca"].any(), sub["su"].any(), sub["ph"].any()
+        mg, fe = sub["Mg"].any(), sub["fe"].any()
+        if ca and su:
+            graves.append("Ca + sulfato (precipita CaSO4)")
+        if ca and ph:
+            graves.append("Ca + fosfato (precipita fosfato de calcio)")
+        if mg and ph:
+            notas.append("Mg + fosfato: mantené este estanque ácido (pH < 6) para evitar precipitación")
+        if fe and ph:
+            notas.append("quelato de Fe + fosfato: vigilar el pH")
+        return {"estado": "ERROR" if graves else ("ok con nota" if notas else "ok"),
+                "graves": graves, "notas": notas}
+
+    tabla = a[["nombre", "estanque", "motivo"]].copy()
+    return {"tabla": tabla,
+            "A": a[a["estanque"] == "A"]["nombre"].tolist(),
+            "B": a[a["estanque"] == "B"]["nombre"].tolist(),
+            "estado_A": verificar("A"), "estado_B": verificar("B"),
+            "conflicto": a[a["tk"] == "CONFLICTO"]["nombre"].tolist()}
 
 
 def estimar_ph_tendencia(sel: pd.DataFrame) -> str:
@@ -414,7 +463,7 @@ def exportar_excel(df_aportes, t, alertas, estanques, bal, df_objetivo=None) -> 
     return buf.getvalue()
 
 
-def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
+def analizar_y_mostrar(sel, catalogo, volumen_L, riego, ce_agua, hco3_agua,
                        df_objetivo=None):
     if "N_pct" not in sel.columns:
         sel = sel.merge(catalogo, on="nombre", how="left")
@@ -425,13 +474,12 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
     estanques = asignar_estanques(sel)
     ph_tend = estimar_ph_tendencia(sel)
     ce_madre = t["CE"]
-    factor = 1.0 / razon
-    ce_final = ce_agua + ce_madre / razon
+    ce_aplicada = ce_agua + ce_madre   # la solución preparada es la que se aplica
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("CE estanque madre", f"{ce_madre:.2f} dS/m")
-    c2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m",
-              help=f"CE agua ({ce_agua:.2f}) + CE madre / {razon}")
+    c1.metric("CE de las sales", f"{ce_madre:.2f} dS/m")
+    c2.metric("CE solución aplicada", f"{ce_aplicada:.2f} dS/m",
+              help=f"CE del agua ({ce_agua:.2f}) + CE aportada por las sales")
     c3.metric("Concentración total", f"{t['pct_pv']:.2f} % p/v")
     c4.metric("Tendencia de pH", ph_tend)
 
@@ -446,12 +494,17 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
                     "Solubilidad", "pH / bicarbonatos", "Balance iónico"])
     with tabs[0]:
         st.markdown("**Concentración de nutrientes (ppm = mg/L):**")
-        nut = pd.DataFrame({
-            "Nutriente": ELEMENTOS,
-            "Estanque madre (ppm)": [t[e] for e in ELEMENTOS],
-            f"Final 1:{razon} (ppm)": [t[e] * factor for e in ELEMENTOS]})
+        nut = pd.DataFrame({"Nutriente": ELEMENTOS,
+                            "Concentración (ppm)": [t[e] for e in ELEMENTOS]})
+        if riego:
+            nut[f"Dosis aplicada (kg/ha)"] = [t[e] * riego / 1000.0 for e in ELEMENTOS]
         st.dataframe(nut.round(2), use_container_width=True, hide_index=True)
-        st.bar_chart(nut.set_index("Nutriente")["Estanque madre (ppm)"])
+        if riego:
+            ha = (volumen_L / 1000.0) / riego if riego else 0
+            st.caption(f"Dosis (kg/ha) = ppm × {riego:g} m³/ha ÷ 1000. "
+                       f"Una carga del estanque ({volumen_L:g} L) cubre {ha:.2f} ha "
+                       f"a {riego:g} m³/ha.")
+        st.bar_chart(nut.set_index("Nutriente")["Concentración (ppm)"])
         with st.expander("Equivalente en óxidos (P2O5, K2O, CaO, MgO)"):
             st.dataframe(pd.DataFrame({
                 "Forma": ["P2O5", "K2O", "CaO", "MgO"],
@@ -472,11 +525,34 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
         for sev, titulo, detalle in alertas:
             colores.get(sev, st.info)(f"**[{sev}] {titulo}** — {detalle}")
         st.divider()
-        st.markdown("**Separación sugerida en estanques** "
-                    "(A = calcio/quelatos/nitratos · B = sulfatos/fosfatos/ácidos):")
-        st.dataframe(estanques, use_container_width=True, hide_index=True)
-        if (estanques["estanque"] == "CONFLICTO").any():
-            st.warning("Algun fertilizante cae en A y B a la vez: revisa la receta.")
+        st.markdown("**Propuesta de estanques** "
+                    "(A = calcio · quelatos · nitratos | B = sulfatos · fosfatos · ácidos):")
+        if estanques["conflicto"]:
+            st.error("No se puede separar en dos estanques: "
+                     + ", ".join(estanques["conflicto"]) +
+                     " mezcla(n) calcio con sulfato/fosfato en el mismo producto.")
+        ca, cb = st.columns(2)
+        for col, tk in ((ca, "A"), (cb, "B")):
+            contenido = estanques[tk]
+            estado = estanques[f"estado_{tk}"]
+            with col:
+                st.markdown(f"**Estanque {tk}**")
+                if not contenido:
+                    st.caption("(vacío)")
+                else:
+                    for n in contenido:
+                        st.write(f"• {n}")
+                if estado["graves"]:
+                    st.error("Incompatible: " + "; ".join(estado["graves"]))
+                elif estado["notas"]:
+                    st.warning("; ".join(estado["notas"]))
+                elif contenido:
+                    st.success("Verificado: sin incompatibilidades.")
+        if not estanques["conflicto"] and not estanques["estado_A"]["graves"] \
+                and not estanques["estado_B"]["graves"]:
+            st.caption("Propuesta verificada: el calcio queda separado de sulfatos y "
+                       "fosfatos. Prepara cada estanque por separado y dilúyelos juntos "
+                       "solo en el agua de riego ya diluida.")
     with tabs[2]:
         st.markdown("**Solubilidad** (dosis g/L vs límite a ~20 C):")
         sol = df_ap[["nombre", "g_L", "solubilidad_g_L", "excede_solub"]].rename(
@@ -515,7 +591,7 @@ def analizar_y_mostrar(sel, catalogo, volumen_L, razon, ce_agua, hco3_agua,
     st.subheader("Exportar", anchor=False)
     st.download_button(
         "Descargar receta en Excel",
-        data=exportar_excel(df_ap, t, alertas, estanques, bal, df_objetivo),
+        data=exportar_excel(df_ap, t, alertas, estanques["tabla"], bal, df_objetivo),
         file_name="receta_fertirriego.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -525,9 +601,13 @@ def sidebar_config():
         st.header("Configuración", anchor=False)
         volumen_L = st.number_input("Capacidad del estanque (L)", min_value=1.0,
                                     value=CFG["volumen_default_L"], step=50.0)
-        razon = st.number_input("Razón de inyección 1:R", min_value=1,
-                                value=CFG["razon_iny_default"], step=1,
-                                help="Usa 1 si el estanque es la solución final aplicada.")
+        usar_riego = st.toggle("Calcular dosis por hectárea", value=False,
+                               help="Activa para ver la dosis aplicada (kg/ha) según la "
+                                    "lámina de riego.")
+        riego = None
+        if usar_riego:
+            riego = st.number_input("Riego (m³/ha)", min_value=0.1, value=30.0, step=1.0,
+                                    help="Lámina aplicada. Dosis (kg/ha) = ppm × m³/ha ÷ 1000.")
         st.divider()
         st.subheader("Agua de riego", anchor=False)
         ce_agua = st.number_input("CE del agua (dS/m)", min_value=0.0, value=0.0, step=0.1)
@@ -536,7 +616,7 @@ def sidebar_config():
         st.divider()
         st.subheader("Catálogo", anchor=False)
         catalogo = cargar_catalogo_fija()
-    return volumen_L, razon, ce_agua, hco3_agua, catalogo
+    return volumen_L, riego, ce_agua, hco3_agua, catalogo
 
 
 def cargar_catalogo_fija() -> pd.DataFrame:
@@ -559,7 +639,7 @@ def cargar_catalogo_fija() -> pd.DataFrame:
         return cargar_catalogo_default()
 
 
-def modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua):
+def modo_directo(catalogo, volumen_L, riego, ce_agua, hco3_agua):
     st.subheader("Fertilizantes y dosis", anchor=False)
     unidad = st.radio("Unidad de dosis", ["kg", "g"], horizontal=True)
     st.caption(f"Elige fertilizante y dosis en **{unidad}** para **{volumen_L:g} L**.")
@@ -579,14 +659,15 @@ def modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         return
     sel["gramos"] = sel["dosis"].fillna(0) * (1000.0 if unidad == "kg" else 1.0)
     st.subheader("Resultados", anchor=False)
-    analizar_y_mostrar(sel[["nombre", "gramos"]], catalogo, volumen_L, razon,
+    analizar_y_mostrar(sel[["nombre", "gramos"]], catalogo, volumen_L, riego,
                        ce_agua, hco3_agua)
 
 
-def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
+def modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua):
     st.subheader("Objetivo (ppm)", anchor=False)
-    st.caption("Objetivo del **estanque madre**. Deja 0 para no exigir ese nutriente "
-               "(igual se reporta si aparece como efecto colateral).")
+    st.caption("Objetivo de concentración en **el estanque** (la solución que prepararás). "
+               "Deja 0 para no exigir ese nutriente (igual se reporta si aparece como "
+               "efecto colateral).")
     cols = st.columns(6)
     objetivos = {}
     for i, el in enumerate(MACROS_OBJETIVO):
@@ -611,19 +692,19 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         help="Tope de conductividad que la receta NO debe superar. 0 = sin límite.")
     refiere = cce2.radio(
         "La CE crítica se refiere a:",
-        ["Solución final (gotero)", "Estanque madre"], horizontal=True,
-        help="Final = lo que recibe la planta (CE agua + CE madre / razón). "
-             "Madre = la solución concentrada del estanque.")
+        ["Solución aplicada (agua + sales)", "Solo las sales"], horizontal=True,
+        help="Aplicada = CE del agua + CE de las sales (lo que recibe la planta). "
+             "Solo las sales = el aporte de la receta, sin contar el agua.")
 
-    # Traducir el tope a un limite sobre la CE del ESTANQUE MADRE (lo que ve el solver)
+    # Traducir el tope a un límite sobre la CE aportada por las sales (lo que ve el solver)
     ce_cap_madre = None
     if ce_crit > 0:
-        if refiere.startswith("Solución final"):
-            ce_cap_madre = (ce_crit - ce_agua) * razon
+        if refiere.startswith("Solución aplicada"):
+            ce_cap_madre = ce_crit - ce_agua
             if ce_cap_madre <= 0:
                 st.error(f"La CE del agua ({ce_agua:.2f}) ya iguala o supera la CE crítica "
-                         f"final ({ce_crit:.2f}). Sin margen para fertilizar: sube la CE "
-                         "crítica o reduce la CE del agua.")
+                         f"({ce_crit:.2f}). Sin margen para fertilizar: sube la CE crítica "
+                         "o reduce la CE del agua.")
                 return
         else:
             ce_cap_madre = ce_crit
@@ -666,11 +747,11 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
     # --- Estado del tope de CE ---
     if res.get("ce_tope"):
         ce_madre = res["ce_madre"]
-        ce_final = ce_agua + ce_madre / razon
+        ce_aplicada = ce_agua + ce_madre
         m1, m2, m3 = st.columns(3)
-        m1.metric("CE madre lograda", f"{ce_madre:.2f} dS/m")
-        m2.metric("CE final (gotero)", f"{ce_final:.2f} dS/m")
-        etiqueta = "final" if refiere.startswith("Solución final") else "madre"
+        m1.metric("CE de las sales", f"{ce_madre:.2f} dS/m")
+        m2.metric("CE solución aplicada", f"{ce_aplicada:.2f} dS/m")
+        etiqueta = "aplicada" if refiere.startswith("Solución aplicada") else "sales"
         m3.metric(f"CE crítica ({etiqueta})", f"{ce_crit:.2f} dS/m")
         if res["ce_limitada"]:
             # Cuantificar el compromiso real: cuanto bajaron los nutrientes objetivo
@@ -702,7 +783,7 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
                f"· optimizados: {', '.join(res['nut'])}{cap_txt}.")
     st.divider()
     st.subheader("Análisis de la receta", anchor=False)
-    analizar_y_mostrar(receta, catalogo, volumen_L, razon, ce_agua, hco3_agua,
+    analizar_y_mostrar(receta, catalogo, volumen_L, riego, ce_agua, hco3_agua,
                        df_objetivo=df_obj)
 
 
@@ -729,15 +810,15 @@ def main():
     st.title(CFG["titulo"], anchor=False)
     st.caption("Calcula concentraciones, CE, compatibilidad y pH. "
                "Modo directo (dosis → resultado) o inverso (objetivo → receta).")
-    volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
+    volumen_L, riego, ce_agua, hco3_agua, catalogo = sidebar_config()
     modo = st.radio("Modo de trabajo",
                     ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
                     horizontal=True)
     st.divider()
     if modo.startswith("Directo"):
-        modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+        modo_directo(catalogo, volumen_L, riego, ce_agua, hco3_agua)
     else:
-        modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+        modo_inverso(catalogo, volumen_L, riego, ce_agua, hco3_agua)
     st.divider()
     st.caption("La CE usa factores empíricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
