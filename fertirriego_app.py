@@ -673,19 +673,15 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
         etiqueta = "final" if refiere.startswith("Solucion final") else "madre"
         m3.metric(f"CE critica ({etiqueta})", f"{ce_crit:.2f} dS/m")
         if res["ce_limitada"]:
-            # Si el residuo es prácticamente cero, la solución es exacta a pesar del tope
-            if res["rnorm"] < 1e-3:
-                st.success(
-                    f"¡Optimización eficiente! La CE crítica estuvo **activa** (frenó la CE en {ce_madre:.2f} dS/m "
-                    f"frente a los {res['ce_sin_tope']:.2f} dS/m originales). Gracias a la variedad de fuentes disponibles, "
-                    f"el solver encontró una combinación alternativa que cumple el **100% de tus objetivos (error 0%)** "
-                    f"generando el menor impacto salino posible.")
-            else:
-                st.warning(
-                    f"La CE crítica fue **activa**: limitó la receta. Sin tope, la CE del estanque habría sido "
-                    f"{res['ce_sin_tope']:.2f} dS/m. Para respetar el límite, el solver tuvo que reducir sales y por eso "
-                    f"algunos nutrientes quedaron por debajo del objetivo (ver errores arriba). Sube la CE crítica, "
-                    f"el volumen del estanque, o usa fuentes más concentradas si necesitas acercarte más.")
+            st.warning(
+                f"La CE critica fue **activa**: limito la receta. Sin tope, la CE del "
+                f"estanque madre habria sido {res['ce_sin_tope']:.2f} dS/m. Para respetar "
+                "el limite, el solver redujo sales y por eso algunos nutrientes quedan por "
+                "debajo del objetivo (ver errores arriba). Sube la CE critica, el volumen "
+                "del estanque, o usa fuentes mas concentradas/menos salinas si necesitas "
+                "acercarte mas a los objetivos.")
+        else:
+            st.success("La receta cumple la CE critica con holgura (el tope no fue activo).")
 
     cap_txt = (f" · tope CE madre={res['ce_tope']:.2f} dS/m"
                f"{' (ACTIVO)' if res['ce_limitada'] else ''}") if res.get("ce_tope") else ""
@@ -704,8 +700,14 @@ def main():
     st.caption("Concentracion (ppm, %) · CE (dS/m) · Compatibilidad · pH · "
                "y dosificacion inversa (objetivo -> receta).")
     volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
+    modo = st.radio("Modo de trabajo",
+                    ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
+                    horizontal=True)
     st.divider()
-    modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+    if modo.startswith("Directo"):
+        modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+    else:
+        modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     st.divider()
     st.caption("La CE usa factores empiricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
