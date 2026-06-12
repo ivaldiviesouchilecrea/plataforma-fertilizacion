@@ -29,7 +29,7 @@ import streamlit as st
 #  Mientras este vacia, la app usa el catalogo interno por defecto.
 #  Ejemplo: "https://docs.google.com/spreadsheets/d/XXXXXXXX/edit#gid=0"
 # ===========================================================================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1tjoH-8RZ-ey5Xu-aMbDsDZ7_YhWSeX4R-pxa6WUbO_o/edit?usp=sharing"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1ICkXbGILdm0SAw-ubaHs6xdfEkBCdjinNP4P8YkiOxQ/edit?usp=sharing"
 
 CFG = {
     "titulo": "Plataforma de Disolución de Fertilizantes",
