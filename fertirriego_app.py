@@ -19,6 +19,7 @@
 """
 
 import re
+import calendar as _cal
 from io import BytesIO
 from datetime import date, timedelta
 
@@ -1001,6 +1002,33 @@ def generar_calendario(serie, freq_etapa, dias_operativos, cfg_riego) -> pd.Data
     return pd.DataFrame(eventos)
 
 
+def fmt_duracion(horas) -> str:
+    """Convierte horas decimales a texto 'H hora(s) M minuto(s)'."""
+    if horas is None or (isinstance(horas, float) and np.isnan(horas)):
+        return "—"
+    total_min = int(round(float(horas) * 60))
+    hh, mm = divmod(total_min, 60)
+    partes = []
+    if hh:
+        partes.append(f"{hh} hora" + ("s" if hh != 1 else ""))
+    if mm or not hh:
+        partes.append(f"{mm} minuto" + ("s" if mm != 1 else ""))
+    return " ".join(partes)
+
+
+def horas_a_hm(horas) -> str:
+    """Version compacta para celdas: 'Hh Mmin' / 'Mmin' / 'Hh'."""
+    if horas is None or (isinstance(horas, float) and np.isnan(horas)):
+        return "—"
+    total_min = int(round(float(horas) * 60))
+    hh, mm = divmod(total_min, 60)
+    if hh and mm:
+        return f"{hh} h {mm} min"
+    if hh:
+        return f"{hh} h"
+    return f"{mm} min"
+
+
 def distribuir_nutrientes(cal, objetivos_ha, modo="agua") -> pd.DataFrame:
     """Reparte los kg/ha objetivo de cada etapa entre los eventos de esa etapa.
     Los aportes por evento quedan en kg/ha.
@@ -1231,105 +1259,252 @@ def _tab_oferta():
                      use_container_width=True, hide_index=True, height=320)
 
 
+MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+            "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+_CAL_CSS = """
+<style>
+div[data-testid="stPopover"] button {padding:0.05rem 0.4rem; font-size:0.72rem;
+    min-height:0; line-height:1.2;}
+</style>
+"""
+
+
+def _calendario_df_desde_estado(serie, cfg) -> pd.DataFrame:
+    """Reconstruye el DataFrame del calendario a partir del estado editable
+    (fechas de evento + láminas e 'incluir' guardados por día) y la serie diaria."""
+    Ea, Es, PPeq = cfg["Ea"], cfg["Es"], cfg["PPeq"]
+    etapa_por_fecha, etc_por_fecha = {}, {}
+    for _, r in serie.iterrows():
+        f = pd.Timestamp(r["fecha"]).date()
+        etapa_por_fecha[f] = r["etapa"]
+        etc_por_fecha[f] = float(r["ETc_mm"])
+    inicio = min(etapa_por_fecha) if etapa_por_fecha else None
+    dates = sorted(date.fromisoformat(s) for s in st.session_state.get("temp_cal_dates", []))
+    filas = []
+    prev = (inicio - timedelta(days=1)) if inicio else None
+    for i, f in enumerate(dates):
+        iso = f.isoformat()
+        lam = float(st.session_state.get(f"cal_lam_{iso}", 0.0))
+        inc = bool(st.session_state.get(f"cal_inc_{iso}", True))
+        etc_acum = sum(v for d, v in etc_por_fecha.items()
+                       if prev is not None and prev < d <= f)
+        intervalo = (f - prev).days if prev is not None else 0
+        neta = lam * Ea * Es
+        th = lam / PPeq if PPeq > 0 else 0.0
+        filas.append({
+            "evento": i + 1, "fecha": f, "dia_semana": DIAS_SEMANA[f.weekday()],
+            "etapa": etapa_por_fecha.get(f, ""), "intervalo_dias": intervalo,
+            "ETc_acum_mm": round(etc_acum, 2), "lamina_neta_mm": round(neta, 2),
+            "lamina_bruta_mm": round(lam, 2), "vol_bruto_m3_ha": round(lam * 10.0, 1),
+            "tiempo_riego_h": round(th, 2), "tiempo_hhmm": fmt_duracion(th),
+            "incluir": inc})
+        prev = f
+    cols = ["evento", "fecha", "dia_semana", "etapa", "intervalo_dias", "ETc_acum_mm",
+            "lamina_neta_mm", "lamina_bruta_mm", "vol_bruto_m3_ha", "tiempo_riego_h",
+            "tiempo_hhmm", "incluir"]
+    return pd.DataFrame(filas, columns=cols)
+
+
+def _render_mes(anio, mes, inicio, fin, eventos_set, dias_operativos, PPeq):
+    """Dibuja un mes como rejilla de calendario con los riegos destacados."""
+    st.markdown(f"##### {MESES_ES[mes-1].capitalize()} {anio}")
+    cab = st.columns(7)
+    for i, d in enumerate(["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]):
+        cab[i].markdown(
+            f"<div style='text-align:center;color:#888;font-size:0.75rem;"
+            f"font-weight:600'>{d}</div>", unsafe_allow_html=True)
+    for semana in _cal.Calendar(firstweekday=0).monthdatescalendar(anio, mes):
+        cols = st.columns(7)
+        for i, day in enumerate(semana):
+            with cols[i]:
+                if day.month != mes:
+                    st.markdown("<div style='min-height:78px'></div>",
+                                unsafe_allow_html=True)
+                    continue
+                iso = day.isoformat()
+                en_temp = (inicio <= day <= fin)
+                operativo = day.weekday() in dias_operativos
+                if iso in eventos_set:
+                    lam = float(st.session_state.get(f"cal_lam_{iso}", 0.0))
+                    inc = bool(st.session_state.get(f"cal_inc_{iso}", True))
+                    borde = "#2e7d32" if inc else "#bdbdbd"
+                    fondo = "#e8f5e9" if inc else "#f5f5f5"
+                    nota = "" if inc else "<div style='font-size:0.62rem;color:#999'>excluido</div>"
+                    st.markdown(
+                        f"<div style='border-left:4px solid {borde};background:{fondo};"
+                        f"border-radius:6px;padding:3px 6px;min-height:78px'>"
+                        f"<div style='font-weight:700;font-size:0.85rem'>{day.day}</div>"
+                        f"<div style='font-size:0.70rem;line-height:1.2'>{lam:.1f} mm<br>"
+                        f"{lam*10:.0f} m³/ha<br>{horas_a_hm(lam/PPeq if PPeq>0 else 0)}</div>"
+                        f"{nota}</div>", unsafe_allow_html=True)
+                    with st.popover("Editar", use_container_width=True):
+                        st.markdown(f"**{day.day:02d}-{day.month:02d}-{day.year}**")
+                        kwl = {} if f"cal_lam_{iso}" in st.session_state else {"value": lam}
+                        st.number_input("Lámina bruta (mm)", min_value=0.0, step=0.5,
+                                        key=f"cal_lam_{iso}", **kwl)
+                        kwi = {} if f"cal_inc_{iso}" in st.session_state else {"value": inc}
+                        st.checkbox("Incluir este riego", key=f"cal_inc_{iso}", **kwi)
+                        lam_now = float(st.session_state.get(f"cal_lam_{iso}", lam))
+                        st.caption(f"Tiempo: {fmt_duracion(lam_now/PPeq if PPeq>0 else 0)} · "
+                                   f"Volumen: {lam_now*10:.0f} m³/ha")
+                        if st.button("Eliminar riego", key=f"cal_del_{iso}"):
+                            ds = st.session_state.get("temp_cal_dates", [])
+                            if iso in ds:
+                                ds.remove(iso)
+                            st.session_state["temp_cal_dates"] = ds
+                            st.rerun()
+                else:
+                    col = "#333" if (operativo and en_temp) else "#c2c2c2"
+                    etiqueta = ("<div style='font-size:0.62rem;color:#aaa'>operativo</div>"
+                                if (operativo and en_temp) else "")
+                    fondo = "#fafafa" if en_temp else "transparent"
+                    st.markdown(
+                        f"<div style='border-radius:6px;padding:3px 6px;min-height:78px;"
+                        f"background:{fondo}'><div style='font-weight:700;font-size:0.85rem;"
+                        f"color:{col}'>{day.day}</div>{etiqueta}</div>",
+                        unsafe_allow_html=True)
+
+
 def _tab_calendario():
-    st.markdown("**4 · Calendario de riego (mm y tiempo) — propuesto y editable**")
+    st.markdown("**4 · Calendario de riego — dashboard interactivo (mm, m³/ha y tiempo)**")
     if "temp_serie" not in st.session_state:
         st.warning("Genera primero la oferta hídrica en la pestaña 3.")
         return
-    st.markdown("Parámetros del equipo y manejo:")
-    c = st.columns(4)
-    Ea = c[0].number_input("Eficiencia de aplicación", min_value=0.05, max_value=1.0,
-                           value=0.90, step=0.01, key="temp_Ea",
-                           help="Fracción del agua aplicada que queda disponible (riego "
-                                "localizado típico 0,85–0,95).")
-    Es = c[1].number_input("Eficiencia de almacenamiento", min_value=0.05, max_value=1.0,
-                           value=0.95, step=0.01, key="temp_Es",
-                           help="Fracción del agua que efectivamente se almacena en la "
-                                "zona radicular.")
-    PPeq = c[2].number_input("Precipitación del equipo PPeq (mm/h)", min_value=0.1,
-                             value=3.5, step=0.1, key="temp_PPeq",
-                             help="Lámina horaria que aplica el equipo (caudal/superficie).")
-    Kr = c[3].number_input("Kr (reducción localizada)", min_value=0.1, max_value=1.0,
-                           value=1.00, step=0.05, key="temp_Kr",
-                           help="Coeficiente de reducción por sombreamiento/mojado parcial "
-                                "en riego localizado.")
-    c2 = st.columns(4)
-    Pe = c2[0].number_input("Precipitación efectiva (mm/d)", min_value=0.0, value=0.0,
-                            step=0.5, key="temp_Pe",
-                            help="Aporte de lluvia que descuenta la lámina neta diaria.")
-    cfg_riego = {"Ea": Ea, "Es": Es, "PPeq": PPeq, "Kr": Kr, "Pe_mm_dia": Pe}
 
-    st.markdown("**Días operativos** (desmarca, p. ej., el domingo):")
-    cd = st.columns(7)
-    dias_operativos = set()
-    default_op = [True, True, True, True, True, True, False]
-    for i, dia in enumerate(DIAS_SEMANA):
-        if cd[i].checkbox(dia, value=default_op[i], key=f"temp_op_{i}"):
-            dias_operativos.add(i)
-    if not dias_operativos:
-        st.error("Selecciona al menos un día operativo.")
+    with st.expander("Parámetros del equipo, días operativos y frecuencias", expanded=True):
+        c = st.columns(4)
+        Ea = c[0].number_input("Eficiencia de aplicación", min_value=0.05, max_value=1.0,
+                               value=0.90, step=0.01, key="temp_Ea",
+                               help="Fracción del agua aplicada que queda disponible "
+                                    "(riego localizado típico 0,85–0,95).")
+        Es = c[1].number_input("Eficiencia de almacenamiento", min_value=0.05, max_value=1.0,
+                               value=0.95, step=0.01, key="temp_Es",
+                               help="Fracción del agua que efectivamente se almacena en la "
+                                    "zona radicular.")
+        PPeq = c[2].number_input("Precipitación del equipo PPeq (mm/h)", min_value=0.1,
+                                 value=3.5, step=0.1, key="temp_PPeq",
+                                 help="Lámina horaria que aplica el equipo (caudal/superficie).")
+        Kr = c[3].number_input("Kr (reducción localizada)", min_value=0.1, max_value=1.0,
+                               value=1.00, step=0.05, key="temp_Kr",
+                               help="Coeficiente de reducción por sombreamiento/mojado "
+                                    "parcial en riego localizado.")
+        c2 = st.columns(4)
+        Pe = c2[0].number_input("Precipitación efectiva (mm/d)", min_value=0.0, value=0.0,
+                                step=0.5, key="temp_Pe",
+                                help="Aporte de lluvia que descuenta la lámina neta diaria.")
+        cfg_riego = {"Ea": Ea, "Es": Es, "PPeq": PPeq, "Kr": Kr, "Pe_mm_dia": Pe}
+        st.session_state["temp_cfg_riego"] = cfg_riego
+
+        st.markdown("**Días operativos** (desmarca, p. ej., el domingo):")
+        cd = st.columns(7)
+        dias_operativos = set()
+        default_op = [True, True, True, True, True, True, False]
+        for i, dia in enumerate(DIAS_SEMANA):
+            if cd[i].checkbox(dia, value=default_op[i], key=f"temp_op_{i}"):
+                dias_operativos.add(i)
+        st.session_state["temp_dias_operativos"] = sorted(dias_operativos)
+        if not dias_operativos:
+            st.error("Selecciona al menos un día operativo.")
+            return
+
+        st.markdown("**Frecuencia de riego estimada por etapa (días entre riegos):**")
+        cf = st.columns(4)
+        freq_def = {"Inicial": 4, "Desarrollo": 3, "Media": 2, "Final": 3}
+        freq_etapa = {}
+        for i, etapa in enumerate(ETAPAS_FAO):
+            freq_etapa[etapa] = cf[i].number_input(
+                f"Frecuencia {etapa}", min_value=1, max_value=30,
+                value=int(freq_def[etapa]), step=1, key=f"temp_freq_{etapa}")
+
+        if st.button("Generar / regenerar propuesta", type="primary", key="temp_btn_cal"):
+            prop = generar_calendario(st.session_state["temp_serie"], freq_etapa,
+                                      dias_operativos, cfg_riego)
+            isos = [pd.Timestamp(f).date().isoformat() for f in prop["fecha"]]
+            st.session_state["temp_cal_dates"] = isos
+            for _, r in prop.iterrows():
+                iso = pd.Timestamp(r["fecha"]).date().isoformat()
+                st.session_state[f"cal_lam_{iso}"] = float(r["lamina_bruta_mm"])
+                st.session_state[f"cal_inc_{iso}"] = True
+
+    if "temp_cal_dates" not in st.session_state:
+        st.info("Genera la propuesta para construir el calendario interactivo.")
         return
 
-    st.markdown("**Frecuencia de riego estimada por etapa (días entre riegos):**")
-    cf = st.columns(4)
-    freq_def = {"Inicial": 4, "Desarrollo": 3, "Media": 2, "Final": 3}
-    freq_etapa = {}
-    for i, etapa in enumerate(ETAPAS_FAO):
-        freq_etapa[etapa] = cf[i].number_input(
-            f"Frecuencia {etapa}", min_value=1, max_value=30,
-            value=int(freq_def[etapa]), step=1, key=f"temp_freq_{etapa}")
+    serie = st.session_state["temp_serie"]
+    fechas_serie = [pd.Timestamp(f).date() for f in serie["fecha"]]
+    inicio, fin = min(fechas_serie), max(fechas_serie)
+    eventos_set = set(st.session_state["temp_cal_dates"])
 
-    st.session_state["temp_cfg_riego"] = cfg_riego
-    if st.button("Generar / regenerar calendario propuesto", type="primary",
-                 key="temp_btn_cal"):
-        prop = generar_calendario(st.session_state["temp_serie"], freq_etapa,
-                                  dias_operativos, cfg_riego)
-        st.session_state["temp_cal_prop"] = prop
-        st.session_state.pop("temp_cal_edit", None)
+    st.markdown(_CAL_CSS, unsafe_allow_html=True)
 
-    if "temp_cal_prop" not in st.session_state:
-        st.info("Pulsa el botón para generar la propuesta de calendario.")
-        return
-
-    prop = st.session_state["temp_cal_prop"]
-    if prop.empty:
-        st.warning("No se generaron eventos: revisa frecuencias, días operativos o la "
-                   "oferta de riego (puede ser 0 si el factor o Kr son muy bajos).")
-        return
-
-    base = st.session_state.get("temp_cal_edit", prop).copy()
-    base["fecha"] = pd.to_datetime(base["fecha"])
-    st.caption("Edita fechas, láminas o tiempos; desmarca 'incluir' para saltar un riego. "
-               "Las recetas usarán esta tabla editada.")
-    edit = st.data_editor(
-        base, use_container_width=True, hide_index=True, num_rows="dynamic",
-        key="temp_cal_editor",
-        column_config={
-            "evento": st.column_config.NumberColumn("Evento", disabled=True),
-            "fecha": st.column_config.DateColumn("Fecha", format="DD-MM-YYYY"),
-            "dia_semana": st.column_config.TextColumn("Día", disabled=True),
-            "etapa": st.column_config.SelectboxColumn("Etapa", options=ETAPAS_FAO),
-            "intervalo_dias": st.column_config.NumberColumn("Interv. (d)"),
-            "ETc_acum_mm": st.column_config.NumberColumn("ETc acum (mm)", format="%.1f"),
-            "lamina_neta_mm": st.column_config.NumberColumn("Neta (mm)", format="%.2f"),
-            "lamina_bruta_mm": st.column_config.NumberColumn("Bruta (mm)", format="%.2f"),
-            "vol_bruto_m3_ha": st.column_config.NumberColumn("Vol. (m³/ha)", format="%.1f"),
-            "tiempo_riego_h": st.column_config.NumberColumn("Tiempo (h)", format="%.2f"),
-            "incluir": st.column_config.CheckboxColumn("Incluir")})
-    edit["fecha"] = pd.to_datetime(edit["fecha"]).dt.date
-    st.session_state["temp_cal_edit"] = edit
-
-    activos = edit[edit["incluir"] == True]
-    vol_tot = activos["lamina_bruta_mm"].sum() * 10.0
+    cdf = _calendario_df_desde_estado(serie, cfg_riego)
+    activos = cdf[cdf["incluir"] == True]
     mm = st.columns(4)
     mm[0].metric("N° de riegos", f"{len(activos)}")
     mm[1].metric("Lámina bruta total", f"{activos['lamina_bruta_mm'].sum():.0f} mm")
-    mm[2].metric("Tiempo total", f"{activos['tiempo_riego_h'].sum():.1f} h")
-    mm[3].metric("Volumen temporada", f"{vol_tot:.0f} m³/ha")
+    mm[2].metric("Tiempo total", fmt_duracion(activos["tiempo_riego_h"].sum()))
+    mm[3].metric("Volumen temporada", f"{activos['lamina_bruta_mm'].sum()*10:.0f} m³/ha")
+
+    ca, cb = st.columns([2, 1])
+    meses = []
+    y, m = inicio.year, inicio.month
+    while (y, m) <= (fin.year, fin.month):
+        meses.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    etiquetas = [f"{MESES_ES[mm_-1].capitalize()} {yy}" for yy, mm_ in meses]
+    sel = ca.selectbox("Mes a visualizar", etiquetas, key="temp_cal_mes")
+    anio_sel, mes_sel = meses[etiquetas.index(sel)]
+    with cb.popover("＋ Agregar riego", use_container_width=True):
+        nuevo = st.date_input("Fecha del riego", value=inicio, min_value=inicio,
+                              max_value=fin, key="temp_add_fecha", format="DD-MM-YYYY")
+        lam_def = round(float(activos["lamina_bruta_mm"].mean()), 1) if len(activos) else 5.0
+        lam_nuevo = st.number_input("Lámina bruta (mm)", min_value=0.0, value=lam_def,
+                                    step=0.5, key="temp_add_lam")
+        if st.button("Agregar al calendario", key="temp_add_btn"):
+            iso = pd.Timestamp(nuevo).date().isoformat()
+            ds = st.session_state.get("temp_cal_dates", [])
+            if iso not in ds:
+                ds.append(iso)
+            st.session_state["temp_cal_dates"] = ds
+            st.session_state[f"cal_lam_{iso}"] = float(lam_nuevo)
+            st.session_state[f"cal_inc_{iso}"] = True
+            st.rerun()
+
+    st.caption("Cada celda con riego muestra lámina (mm), volumen (m³/ha) y tiempo. "
+               "Pulsa **Editar** en un día para cambiar la lámina, excluirlo o eliminarlo; "
+               "usa **Agregar riego** para añadir uno en cualquier fecha.")
+    _render_mes(anio_sel, mes_sel, inicio, fin, eventos_set,
+                set(st.session_state["temp_dias_operativos"]), PPeq)
+
+    st.markdown("<div style='display:flex;gap:18px;font-size:0.75rem;color:#666;"
+                "margin-top:6px'>"
+                "<span><span style='color:#2e7d32'>■</span> riego incluido</span>"
+                "<span><span style='color:#bdbdbd'>■</span> riego excluido</span>"
+                "<span><span style='color:#aaa'>■</span> día operativo sin riego</span></div>",
+                unsafe_allow_html=True)
+
+    cdf = _calendario_df_desde_estado(serie, cfg_riego)
+    st.session_state["temp_cal_edit"] = cdf
+
+    with st.expander("Ver tabla completa de riegos"):
+        vista = cdf.copy()
+        vista["fecha"] = vista["fecha"].apply(lambda d: d.strftime("%d-%m-%Y"))
+        vista = vista[["evento", "fecha", "dia_semana", "etapa", "intervalo_dias",
+                       "ETc_acum_mm", "lamina_neta_mm", "lamina_bruta_mm",
+                       "vol_bruto_m3_ha", "tiempo_hhmm", "incluir"]].rename(columns={
+                           "dia_semana": "día", "intervalo_dias": "interv. (d)",
+                           "ETc_acum_mm": "ETc acum (mm)", "lamina_neta_mm": "neta (mm)",
+                           "lamina_bruta_mm": "bruta (mm)", "vol_bruto_m3_ha": "vol (m³/ha)",
+                           "tiempo_hhmm": "tiempo"})
+        st.dataframe(vista, use_container_width=True, hide_index=True, height=320)
 
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        edit.to_excel(w, sheet_name="Calendario", index=False)
+        cdf.to_excel(w, sheet_name="Calendario", index=False)
     st.download_button("Descargar calendario en Excel", data=buf.getvalue(),
                        file_name="calendario_riego.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
