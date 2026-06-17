@@ -897,41 +897,40 @@ def parsear_eto_agromet(file) -> tuple:
     return out, list(estaciones.keys())
 
 
-def construir_serie_diaria(crop, fecha_siembra, L, factores, eto_df, estacion,
-                           relleno="media") -> tuple:
+def construir_serie_diaria(crop, fecha_siembra, L, factores, eto_df, estacion) -> tuple:
     """Serie diaria de la temporada: fecha, dia, etapa, Kc, ETo, ETc y oferta de
-    riego (factor de irrigacion por etapa x ETc). Rellena dias sin ETo medida.
+    riego (factor de irrigacion por etapa x ETc). La ETo de los dias sin medicion
+    se interpola linealmente; los dias fuera del rango medido se completan con el
+    valor medido mas cercano (extrapolacion plana).
 
-    Devuelve (serie, info) donde info trae cobertura y valor de relleno usado."""
+    Devuelve (serie, info); info detalla dias medidos, interpolados y extrapolados."""
     li, ld, lm, ll = L
     total = int(li + ld + lm + ll)
+    fechas = [fecha_siembra + timedelta(days=d) for d in range(total)]
     eto_map = {}
-    if eto_df is not None and estacion in eto_df.columns:
+    if eto_df is not None and estacion in getattr(eto_df, "columns", []):
         for _, r in eto_df.iterrows():
             if pd.notna(r[estacion]):
                 eto_map[pd.Timestamp(r["fecha"]).date()] = float(r[estacion])
-    fechas = [fecha_siembra + timedelta(days=d) for d in range(total)]
-    medidos = [eto_map.get(f) for f in fechas]
-    disponibles = [v for v in medidos if v is not None]
-    if relleno == "media" and disponibles:
-        val_relleno = float(np.mean(disponibles))
-    elif isinstance(relleno, (int, float)):
-        val_relleno = float(relleno)
-    else:
-        val_relleno = float(np.mean(disponibles)) if disponibles else 0.0
+    medidos = pd.Series([eto_map.get(f, np.nan) for f in fechas], dtype="float64")
+    eto_serie = medidos.interpolate(method="linear", limit_direction="both")
+    primer = medidos.first_valid_index()
+    ultimo = medidos.last_valid_index()
     filas = []
-    n_rellenos = 0
-    for d in range(1, total + 1):
-        fecha = fecha_siembra + timedelta(days=d - 1)
+    dias_interpolados = []
+    dias_extrapolados = []
+    for i, d in enumerate(range(1, total + 1)):
+        fecha = fechas[i]
         kc, etapa = kc_diario(crop, d, L)
-        medido = eto_map.get(fecha)
-        if medido is None:
-            eto = val_relleno
-            origen = "relleno"
-            n_rellenos += 1
-        else:
-            eto = medido
+        if pd.notna(medidos.iloc[i]):
             origen = "medido"
+        elif primer is not None and primer <= i <= ultimo:
+            origen = "interpolado"
+            dias_interpolados.append(fecha)
+        else:
+            origen = "extrapolado"
+            dias_extrapolados.append(fecha)
+        eto = float(eto_serie.iloc[i]) if pd.notna(eto_serie.iloc[i]) else 0.0
         etc = kc * eto
         f = float(factores.get(etapa, 1.0))
         filas.append({
@@ -940,9 +939,13 @@ def construir_serie_diaria(crop, fecha_siembra, L, factores, eto_df, estacion,
             "origen_ETo": origen, "factor_riego": f,
             "ETc_mm": round(etc, 3), "oferta_riego_mm": round(f * etc, 3)})
     serie = pd.DataFrame(filas)
-    info = {"total_dias": total, "n_medidos": len(disponibles),
-            "n_rellenos": n_rellenos, "val_relleno": val_relleno,
-            "cobertura_pct": 100.0 * len(disponibles) / total if total else 0.0}
+    n_medidos = int(medidos.notna().sum())
+    info = {"total_dias": total, "n_medidos": n_medidos,
+            "n_interpolados": len(dias_interpolados),
+            "n_extrapolados": len(dias_extrapolados),
+            "dias_interpolados": dias_interpolados,
+            "dias_extrapolados": dias_extrapolados,
+            "cobertura_pct": 100.0 * n_medidos / total if total else 0.0}
     return serie, info
 
 
@@ -989,6 +992,7 @@ def generar_calendario(serie, freq_etapa, dias_operativos, cfg_riego) -> pd.Data
                 "ETc_acum_mm": round(etc_acum, 2),
                 "lamina_neta_mm": round(acum_neta, 2),
                 "lamina_bruta_mm": round(lb, 2),
+                "vol_bruto_m3_ha": round(lb * 10.0, 1),
                 "tiempo_riego_h": round(t_h, 2),
                 "incluir": True})
             acum_neta = 0.0
@@ -997,8 +1001,9 @@ def generar_calendario(serie, freq_etapa, dias_operativos, cfg_riego) -> pd.Data
     return pd.DataFrame(eventos)
 
 
-def distribuir_nutrientes(cal, objetivos_ha, sup_ha, modo="agua") -> pd.DataFrame:
+def distribuir_nutrientes(cal, objetivos_ha, modo="agua") -> pd.DataFrame:
     """Reparte los kg/ha objetivo de cada etapa entre los eventos de esa etapa.
+    Los aportes por evento quedan en kg/ha.
     modo='agua' -> proporcional a la lamina bruta (concentracion ~constante);
     modo='igual' -> partes iguales por evento."""
     cal = cal.copy()
@@ -1015,23 +1020,22 @@ def distribuir_nutrientes(cal, objetivos_ha, sup_ha, modo="agua") -> pd.DataFram
         tot = float(peso.sum())
         for nut in MACROS_OBJETIVO:
             kg_ha = float(objetivos_ha.loc[etapa, nut]) if etapa in objetivos_ha.index else 0.0
-            kg_campo = kg_ha * sup_ha
             if tot > 0:
-                cal.loc[sub.index, f"kg_{nut}"] = kg_campo * peso / tot
+                cal.loc[sub.index, f"kg_{nut}"] = kg_ha * peso / tot
     return cal
 
 
-def receta_evento(catalogo, kg_event, lamina_bruta_mm, sup_ha, disponibles,
+def receta_evento(catalogo, kg_event, lamina_bruta_mm, disponibles,
                   razon, ce_agua, ce_crit_gotero) -> dict:
-    """Receta de un evento de fertirriego. Resuelve los gramos totales (al campo)
-    para alcanzar los ppm objetivo en el gotero, derivados de los kg objetivo del
-    evento y del volumen de agua aplicado.
+    """Receta de un evento de fertirriego, calculada por hectarea. Resuelve los
+    gramos por ha para alcanzar los ppm objetivo en el gotero, derivados de los
+    kg/ha objetivo del evento y del volumen de agua aplicado por ha.
 
-    V_riego (L) = lamina_bruta_mm x sup_ha x 10000   (1 mm.ha = 10000 L)
-    ppm_gotero  = kg_nut x 1e6 / V_riego
-    El solver entrega los gramos para esos ppm sobre V_riego (= masa por evento).
+    V_riego (L/ha) = lamina_bruta_mm x 10000   (1 mm sobre 1 ha = 10 m3 = 10000 L)
+    ppm_gotero  = kg_ha x 1e6 / V_riego
+    El solver entrega los gramos por ha para esos ppm sobre V_riego.
     Estanque madre: la solucion inyectada = V_riego / razon."""
-    V = float(lamina_bruta_mm) * float(sup_ha) * 10000.0
+    V = float(lamina_bruta_mm) * 10000.0
     if V <= 0:
         return None
     objetivos_ppm = {n: (kg_event.get(n, 0.0) * 1e6 / V) for n in MACROS_OBJETIVO}
@@ -1087,12 +1091,9 @@ def exportar_excel_temporada(meta, serie, calendario, objetivos_ha,
 
 def _tab_cultivo():
     st.markdown("**1 · Especie y etapas FAO-56**")
-    c0, c1 = st.columns([1.4, 1])
-    especie = c0.selectbox("Especie (Kc fijos en el código, editables abajo)",
+    especie = st.selectbox("Especie (Kc fijos en el código, editables abajo)",
                            list(CROPS.keys()), key="temp_especie")
     crop_base = CROPS[especie]
-    sup_ha = c1.number_input("Superficie (ha)", min_value=0.01, value=1.0, step=0.1,
-                             key="temp_sup_ha")
     st.caption(crop_base["ref"])
     cc = st.columns(4)
     kc_ini = cc[0].number_input("Kc inicial", min_value=0.0, value=float(crop_base["kc_ini"]),
@@ -1124,7 +1125,6 @@ def _tab_cultivo():
     st.session_state["temp_L"] = L
     st.session_state["temp_total"] = total
     st.session_state["temp_fecha"] = fecha_siembra
-    st.session_state["temp_sup"] = sup_ha
     st.session_state["temp_especie_nombre"] = especie
 
 
@@ -1133,7 +1133,7 @@ def _tab_eto():
     up = st.file_uploader("Sube el xlsx de ETo", type=["xlsx"], key="temp_eto_up")
     if up is None:
         st.info("Sube el archivo de Evapotranspiración para mapear la ETo a la temporada. "
-                "Mientras tanto puedes definir una ETo constante de respaldo abajo.")
+                "Los días sin dato se interpolarán linealmente de forma automática.")
     eto_df, estaciones = None, []
     if up is not None:
         try:
@@ -1154,16 +1154,9 @@ def _tab_eto():
         except Exception as e:
             st.error(f"No se pudo leer el archivo: {e}")
             st.session_state.pop("temp_eto_df", None)
-    relleno_modo = st.radio(
-        "Relleno de días sin ETo medida (la temporada suele exceder los datos)",
-        ["Media de los días medidos", "Valor constante"], horizontal=True,
-        key="temp_relleno_modo")
-    if relleno_modo.startswith("Valor"):
-        st.session_state["temp_relleno"] = st.number_input(
-            "ETo de relleno (mm/d)", min_value=0.0, value=3.0, step=0.1,
-            key="temp_relleno_val")
-    else:
-        st.session_state["temp_relleno"] = "media"
+    st.caption("Los días sin ETo medida se interpolan linealmente de forma automática. "
+               "Los días fuera del rango con datos se completan con el valor medido más "
+               "cercano. El detalle de días no medidos se informa en la pestaña 3.")
 
 
 def _tab_oferta():
@@ -1184,17 +1177,31 @@ def _tab_oferta():
         st.session_state["temp_crop"], st.session_state["temp_fecha"],
         st.session_state["temp_L"], factores,
         st.session_state.get("temp_eto_df"),
-        st.session_state.get("temp_estacion_sel", ""),
-        relleno=st.session_state.get("temp_relleno", "media"))
+        st.session_state.get("temp_estacion_sel", ""))
     st.session_state["temp_serie"] = serie
     st.session_state["temp_factores"] = factores
 
-    if info["cobertura_pct"] < 100:
+    if info["n_medidos"] == 0:
+        st.error("No hay ETo medida para la temporada: sube el archivo en la pestaña 2. "
+                 "Mientras tanto la ETo se asume 0.")
+    elif info["cobertura_pct"] < 100:
         st.warning(f"Cobertura de ETo medida: {info['cobertura_pct']:.0f}% "
                    f"({info['n_medidos']}/{info['total_dias']} días). "
-                   f"Se rellenaron {info['n_rellenos']} días con "
-                   f"{info['val_relleno']:.2f} mm/d. Para planificación robusta usa una "
-                   "serie de ETo normal o histórica de la temporada completa.")
+                   f"Interpolados linealmente: {info['n_interpolados']} días · "
+                   f"extrapolados (valor medido más cercano): {info['n_extrapolados']} días. "
+                   "Para planificación robusta usa una serie de ETo normal o histórica "
+                   "de la temporada completa.")
+        dias_rell = info["dias_interpolados"] + info["dias_extrapolados"]
+        if dias_rell:
+            with st.expander(f"Ver días con ETo no medida ({len(dias_rell)})"):
+                tipos = (["interpolado"] * info["n_interpolados"] +
+                         ["extrapolado"] * info["n_extrapolados"])
+                rell_df = pd.DataFrame(
+                    {"fecha": [d.strftime("%d-%m-%Y") for d in dias_rell], "tipo": tipos})
+                eto_ref = serie[["fecha", "ETo_mm"]].copy()
+                eto_ref["fecha"] = eto_ref["fecha"].apply(lambda d: d.strftime("%d-%m-%Y"))
+                rell_df = rell_df.merge(eto_ref, on="fecha", how="left")
+                st.dataframe(rell_df, use_container_width=True, hide_index=True, height=240)
     else:
         st.success("ETo medida cubre toda la temporada.")
 
@@ -1204,7 +1211,7 @@ def _tab_oferta():
     m[0].metric("ETc temporada", f"{etc_tot:.0f} mm")
     m[1].metric("Oferta de riego (neta)", f"{oferta_tot:.0f} mm")
     m[2].metric("ETc media", f"{serie['ETc_mm'].mean():.2f} mm/d")
-    m[3].metric("Sup. (ha)", f"{st.session_state['temp_sup']:.2f}")
+    m[3].metric("Oferta neta (vol.)", f"{oferta_tot*10:.0f} m³/ha")
 
     st.markdown("**Curva diaria** (ETo, ETc y oferta de riego):")
     st.line_chart(serie.set_index("fecha")[["ETo_mm", "ETc_mm", "oferta_riego_mm"]])
@@ -1306,19 +1313,19 @@ def _tab_calendario():
             "ETc_acum_mm": st.column_config.NumberColumn("ETc acum (mm)", format="%.1f"),
             "lamina_neta_mm": st.column_config.NumberColumn("Neta (mm)", format="%.2f"),
             "lamina_bruta_mm": st.column_config.NumberColumn("Bruta (mm)", format="%.2f"),
+            "vol_bruto_m3_ha": st.column_config.NumberColumn("Vol. (m³/ha)", format="%.1f"),
             "tiempo_riego_h": st.column_config.NumberColumn("Tiempo (h)", format="%.2f"),
             "incluir": st.column_config.CheckboxColumn("Incluir")})
     edit["fecha"] = pd.to_datetime(edit["fecha"]).dt.date
     st.session_state["temp_cal_edit"] = edit
 
     activos = edit[edit["incluir"] == True]
-    sup = st.session_state["temp_sup"]
-    vol_tot = (activos["lamina_bruta_mm"].sum() * sup * 10.0)
+    vol_tot = activos["lamina_bruta_mm"].sum() * 10.0
     mm = st.columns(4)
     mm[0].metric("N° de riegos", f"{len(activos)}")
     mm[1].metric("Lámina bruta total", f"{activos['lamina_bruta_mm'].sum():.0f} mm")
     mm[2].metric("Tiempo total", f"{activos['tiempo_riego_h'].sum():.1f} h")
-    mm[3].metric("Volumen temporada", f"{vol_tot:.0f} m³")
+    mm[3].metric("Volumen temporada", f"{vol_tot:.0f} m³/ha")
 
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -1353,9 +1360,9 @@ def _tab_nutricion():
         tot["Ca"] / CFG["ox"]["CaO_a_Ca"], tot["Mg"] / CFG["ox"]["MgO_a_Mg"], tot["S"]]
     res["forma óxido"] = ["N", "P2O5", "K2O", "CaO", "MgO", "S"]
     st.dataframe(res.round(1), use_container_width=True, hide_index=True)
-    sup = st.session_state.get("temp_sup", 1.0)
-    st.caption(f"Para {sup:.2f} ha, el total de N sería "
-               f"{tot['N']*sup:.1f} kg, K {tot['K']*sup:.1f} kg, etc.")
+    st.caption(f"Total de temporada por ha: N {tot['N']:.1f} · P {tot['P']:.1f} · "
+               f"K {tot['K']:.1f} · Ca {tot['Ca']:.1f} · Mg {tot['Mg']:.1f} · "
+               f"S {tot['S']:.1f} kg/ha.")
     st.bar_chart(edit)
 
 
@@ -1370,8 +1377,22 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
 
     opciones = sorted(catalogo["nombre"].tolist())
     default = [n for n in ferts_macro_por_defecto(catalogo) if n in opciones]
-    disponibles = st.multiselect("Fertilizantes disponibles para el solver",
-                                 options=opciones, default=default, key="temp_disp")
+    alcance = st.radio("Definición de fertilizantes disponibles",
+                       ["Global", "Por etapa"], horizontal=True, key="temp_alcance_fert")
+    disp_por_etapa = {}
+    if alcance == "Global":
+        disp_global = st.multiselect("Fertilizantes disponibles para el solver",
+                                     options=opciones, default=default, key="temp_disp")
+        for et in ETAPAS_FAO:
+            disp_por_etapa[et] = disp_global
+        disponibles_check = list(disp_global)
+    else:
+        st.caption("Selecciona los fertilizantes habilitados en cada etapa fenológica.")
+        cep = st.columns(2)
+        for i, et in enumerate(ETAPAS_FAO):
+            disp_por_etapa[et] = cep[i % 2].multiselect(
+                et, options=opciones, default=default, key=f"temp_disp_{et}")
+        disponibles_check = sorted({n for et in ETAPAS_FAO for n in disp_por_etapa[et]})
     c = st.columns(3)
     modo_rep = c[0].radio("Reparto del nutriente dentro de la etapa",
                           ["Proporcional al agua", "Partes iguales"], key="temp_modo_rep")
@@ -1380,7 +1401,7 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
                                 help="Tope de CE de la solución que recibe la planta. "
                                      "0 = sin límite. Incluye la CE del agua.")
     c[2].metric("CE agua / razón", f"{ce_agua:.2f} / 1:{razon}")
-    if not disponibles:
+    if not disponibles_check:
         st.info("Selecciona al menos un fertilizante.")
         return
 
@@ -1393,10 +1414,9 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
     if cal.empty:
         st.warning("No hay eventos activos en el calendario.")
         return
-    sup = st.session_state["temp_sup"]
     obj_ha = st.session_state["temp_obj_nutri"].reindex(ETAPAS_FAO)[MACROS_OBJETIVO]
     modo = "agua" if modo_rep.startswith("Proporcional") else "igual"
-    cal = distribuir_nutrientes(cal, obj_ha, sup, modo=modo)
+    cal = distribuir_nutrientes(cal, obj_ha, modo=modo)
 
     recetas_largo, ppm_largo, ce_rows = [], [], []
     resumen_rows = []
@@ -1405,8 +1425,13 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
     n = len(cal)
     for i, (_, ev) in enumerate(cal.iterrows()):
         kg_event = {nut: float(ev[f"kg_{nut}"]) for nut in MACROS_OBJETIVO}
-        out = receta_evento(catalogo, kg_event, ev["lamina_bruta_mm"], sup,
-                            disponibles, razon, ce_agua, ce_crit)
+        disp_ev = disp_por_etapa.get(ev["etapa"], [])
+        if not disp_ev:
+            out = {"error": "sin fertilizantes definidos para la etapa",
+                   "objetivos_ppm": {}}
+        else:
+            out = receta_evento(catalogo, kg_event, ev["lamina_bruta_mm"],
+                                disp_ev, razon, ce_agua, ce_crit)
         barra.progress((i + 1) / n, text=f"Evento {int(ev['evento'])}/{n}")
         if out is None or "error" in out:
             resumen_rows.append({
@@ -1419,7 +1444,7 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
             recetas_largo.append({
                 "evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
                 "etapa": ev["etapa"], "fertilizante": r["nombre"],
-                "gramos_total": round(r["gramos"], 1), "kg_total": round(r["kg"], 3),
+                "gramos_ha": round(r["gramos"], 1), "kg_ha": round(r["kg"], 3),
                 "g_L_madre": round(r["g_L_madre"], 3)})
         fila_ppm = {"evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
                     "etapa": ev["etapa"]}
@@ -1430,15 +1455,15 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
                         "fecha": ev["fecha"].strftime("%d-%m-%Y"), "etapa": ev["etapa"],
                         "CE_gotero_dS_m": round(out["ce_gotero"], 2),
                         "CE_madre_aprox_dS_m": round(out["ce_madre_aprox"], 2),
-                        "V_riego_L": round(out["V_riego_L"], 0),
-                        "V_madre_L": round(out["V_madre_L"], 1),
+                        "V_riego_L_ha": round(out["V_riego_L"], 0),
+                        "V_madre_L_ha": round(out["V_madre_L"], 1),
                         "excede_solub_madre": out["alguno_excede"],
                         "CE_limitada": out["ce_limitada"]})
         resumen_rows.append({
             "evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
             "etapa": ev["etapa"], "estado": "ok",
             "CE_gotero": round(out["ce_gotero"], 2),
-            "masa_total_kg": round(out["receta"]["kg"].sum(), 2)})
+            "masa_total_kg_ha": round(out["receta"]["kg"].sum(), 2)})
         detalles.append((ev, out, kg_event))
     barra.empty()
 
@@ -1451,9 +1476,9 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
     st.dataframe(pd.DataFrame(resumen_rows), use_container_width=True, hide_index=True)
 
     if not recetas_largo.empty:
-        st.subheader("Masa total de fertilizante por temporada", anchor=False)
-        tot_fert = (recetas_largo.groupby("fertilizante")[["kg_total"]].sum()
-                    .sort_values("kg_total", ascending=False).round(2))
+        st.subheader("Masa total de fertilizante por temporada (kg/ha)", anchor=False)
+        tot_fert = (recetas_largo.groupby("fertilizante")[["kg_ha"]].sum()
+                    .sort_values("kg_ha", ascending=False).round(2))
         st.dataframe(tot_fert, use_container_width=True)
         st.subheader("ppm a gotero por evento", anchor=False)
         st.dataframe(ppm_largo, use_container_width=True, hide_index=True, height=300)
@@ -1467,7 +1492,8 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
     st.subheader("Detalle por evento", anchor=False)
     for ev, out, kg_event in detalles:
         etiqueta = f"Evento {int(ev['evento'])} · {ev['fecha']:%d-%m-%Y} · {ev['etapa']} · " \
-                   f"{ev['lamina_bruta_mm']:.1f} mm · {ev['tiempo_riego_h']:.1f} h"
+                   f"{ev['lamina_bruta_mm']:.1f} mm ({ev['lamina_bruta_mm']*10:.0f} m³/ha) · " \
+                   f"{ev['tiempo_riego_h']:.1f} h"
         with st.expander(etiqueta):
             if out is None or "error" in out:
                 st.error("No se resolvió: " + (out.get("error", "sin volumen") if out else "sin volumen"))
@@ -1475,19 +1501,19 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
             cc = st.columns(4)
             cc[0].metric("CE gotero", f"{out['ce_gotero']:.2f} dS/m")
             cc[1].metric("CE madre ~", f"{out['ce_madre_aprox']:.2f} dS/m")
-            cc[2].metric("V riego", f"{out['V_riego_L']:.0f} L")
-            cc[3].metric("V madre/evento", f"{out['V_madre_L']:.0f} L")
+            cc[2].metric("V riego", f"{out['V_riego_L']/1000:.1f} m³/ha")
+            cc[3].metric("V madre/evento", f"{out['V_madre_L']:.0f} L/ha")
             vista = out["receta"][["nombre", "gramos", "kg", "g_L_madre"]].rename(
-                columns={"nombre": "Fertilizante", "gramos": "g (total)",
-                         "kg": "kg (total)", "g_L_madre": "g/L (madre)"})
-            st.dataframe(vista.round({"g (total)": 1, "kg (total)": 3, "g/L (madre)": 3}),
+                columns={"nombre": "Fertilizante", "gramos": "g/ha",
+                         "kg": "kg/ha", "g_L_madre": "g/L (madre)"})
+            st.dataframe(vista.round({"g/ha": 1, "kg/ha": 3, "g/L (madre)": 3}),
                          use_container_width=True, hide_index=True)
             ppm_df = pd.DataFrame({
                 "Nutriente": ELEMENTOS,
                 "Objetivo gotero (ppm)": [round(out["objetivos_ppm"].get(e, 0), 1)
                                           if e in MACROS_OBJETIVO else 0 for e in ELEMENTOS],
                 "Logrado gotero (ppm)": [round(out["ppm_gotero"][e], 1) for e in ELEMENTOS],
-                "kg objetivo evento": [round(kg_event.get(e, 0), 3)
+                "kg/ha objetivo evento": [round(kg_event.get(e, 0), 3)
                                        if e in MACROS_OBJETIVO else 0 for e in ELEMENTOS]})
             st.dataframe(ppm_df, use_container_width=True, hide_index=True)
             if out["alguno_excede"]:
@@ -1495,11 +1521,11 @@ def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
 
     meta = {
         "Especie": st.session_state.get("temp_especie_nombre", ""),
-        "Superficie (ha)": sup,
+        "Base de cálculo": "por hectárea (m³/ha, kg/ha)",
         "Fecha siembra": st.session_state["temp_fecha"].strftime("%d-%m-%Y"),
         "Razón de inyección": f"1:{razon}", "CE agua (dS/m)": ce_agua,
         "HCO3 agua (mg/L)": hco3_agua, "CE crítica gotero (dS/m)": ce_crit,
-        "Reparto": modo_rep, "N eventos": len(cal)}
+        "Reparto": modo_rep, "Fertilizantes": alcance, "N eventos": len(cal)}
     xls = exportar_excel_temporada(
         meta, st.session_state["temp_serie"], st.session_state["temp_cal_edit"],
         obj_ha, recetas_largo, ppm_largo, ce_eventos)
