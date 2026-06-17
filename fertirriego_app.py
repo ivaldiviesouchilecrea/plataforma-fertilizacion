@@ -3,11 +3,13 @@
 =============================================================================
  PLATAFORMA DE DISOLUCIÓN DE FERTILIZANTES PARA FERTIRRIEGO
 =============================================================================
- Dos modos de trabajo:
-   1) DIRECTO : dosis (kg/g) -> concentraciones, CE, compatibilidad, pH...
-   2) INVERSO : objetivo (ppm de cada nutriente) -> receta (gramos de cada
-                fertilizante), resuelta con minimos cuadrados no negativos
-                (NNLS) ponderados por error relativo.
+ Tres modos de trabajo:
+   1) DIRECTO   : dosis (kg/g) -> concentraciones, CE, compatibilidad, pH...
+   2) INVERSO   : objetivo (ppm de cada nutriente) -> receta (gramos de cada
+                  fertilizante), resuelta con minimos cuadrados no negativos
+                  (NNLS) ponderados por error relativo.
+   3) TEMPORADA : cultivo + Kc FAO-56 + ETo -> oferta hidrica, calendario de
+                  riego editable y recetas de fertirriego por evento.
 
  Catálogo: se lee desde una Google Sheet PUBLICA fija (constante SHEET_URL).
            Si no está configurada o falla, usa un catálogo interno de respaldo.
@@ -18,6 +20,7 @@
 
 import re
 from io import BytesIO
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -790,6 +793,741 @@ def modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua):
                        df_objetivo=df_obj)
 
 
+# ===========================================================================
+#  MODULO TEMPORADA  ·  FAO-56 (Kc, ETc), oferta hidrica, calendario de riego
+#  y recetas de fertirriego por evento.
+# ===========================================================================
+
+# Etapas FAO-56 (etiquetas usadas en toda la app de temporada)
+ETAPAS_FAO = ["Inicial", "Desarrollo", "Media", "Final"]
+
+# Especies y coeficientes unicos de cultivo Kc segun FAO-56 (Estudio Riego y
+# Drenaje 56, Cuadros 11 y 12). Kc_ini / Kc_mid / Kc_end y duracion de etapas
+# en dias (L_ini, L_dev, L_mid, L_late). p = fraccion de agotamiento admisible.
+# Estos valores quedan FIJOS en el codigo y son editables por el usuario en UI.
+CROPS = {
+    "Papa / Patata (Solanum tuberosum)": {
+        "kc_ini": 0.50, "kc_mid": 1.15, "kc_end": 0.75,
+        "L_ini": 30, "L_dev": 35, "L_mid": 50, "L_late": 30,
+        "p": 0.35, "altura_m": 0.6,
+        "ref": "FAO-56 Cuadro 12 (0.50/1.15/0.75); Cuadro 11 Europa Abr 30/35/50/30."},
+    "Vid de mesa / pasas (Vitis vinifera)": {
+        "kc_ini": 0.30, "kc_mid": 0.85, "kc_end": 0.45,
+        "L_ini": 20, "L_dev": 50, "L_mid": 75, "L_late": 60,
+        "p": 0.45, "altura_m": 2.0,
+        "ref": "FAO-56 Cuadro 12 uvas mesa (0.30/0.85/0.45); Cuadro 11 Calif 20/50/75/60."},
+    "Vid vinifera (Vitis vinifera)": {
+        "kc_ini": 0.30, "kc_mid": 0.70, "kc_end": 0.45,
+        "L_ini": 30, "L_dev": 60, "L_mid": 40, "L_late": 80,
+        "p": 0.45, "altura_m": 1.8,
+        "ref": "FAO-56 Cuadro 12 uvas vino (0.30/0.70/0.45); Cuadro 11 lat. medias 30/60/40/80."},
+    "Cerezo (Prunus avium, sin cobertura, con heladas)": {
+        "kc_ini": 0.45, "kc_mid": 0.95, "kc_end": 0.70,
+        "L_ini": 20, "L_dev": 70, "L_mid": 90, "L_late": 30,
+        "p": 0.50, "altura_m": 4.0,
+        "ref": "FAO-56 Cuadro 12 Manzanas/Cerezas/Peras sin cobertura, fuertes heladas (0.45/0.95/0.70)."},
+    "Maiz grano (Zea mays)": {
+        "kc_ini": 0.30, "kc_mid": 1.20, "kc_end": 0.60,
+        "L_ini": 30, "L_dev": 40, "L_mid": 50, "L_late": 30,
+        "p": 0.55, "altura_m": 2.0,
+        "ref": "FAO-56 Cuadro 12 maiz grano (0.30/1.20/0.60); Cuadro 11 Esp/Calif 30/40/50/30."},
+    "Tomate (Solanum lycopersicum)": {
+        "kc_ini": 0.60, "kc_mid": 1.15, "kc_end": 0.80,
+        "L_ini": 30, "L_dev": 40, "L_mid": 40, "L_late": 25,
+        "p": 0.40, "altura_m": 0.6,
+        "ref": "FAO-56 Cuadro 12 tomate (0.60/1.15/0.70-0.90)."},
+}
+
+OBJETIVO_NUTRI_DEFAULT = {
+    "Inicial":    {"N": 18.0, "P": 4.0,  "K": 25.0,  "Ca": 4.0,  "Mg": 2.5, "S": 3.5},
+    "Desarrollo": {"N": 54.0, "P": 11.0, "K": 75.0,  "Ca": 12.0, "Mg": 7.5, "S": 10.5},
+    "Media":      {"N": 81.0, "P": 16.0, "K": 112.0, "Ca": 18.0, "Mg": 11.0, "S": 16.0},
+    "Final":      {"N": 27.0, "P": 4.0,  "K": 38.0,  "Ca": 6.0,  "Mg": 4.0, "S": 5.0},
+}
+
+DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+def kc_diario(crop: dict, dia: int, L: tuple) -> tuple:
+    """Curva Kc de FAO-56 para el dia 'dia' (1-indexado desde la siembra).
+    Meseta en Kc_ini durante L_ini, rampa lineal en L_dev hasta Kc_mid, meseta
+    en Kc_mid durante L_mid y descenso lineal en L_late hasta Kc_end."""
+    ci, cm, cf = crop["kc_ini"], crop["kc_mid"], crop["kc_end"]
+    li, ld, lm, ll = L
+    if dia <= li:
+        return ci, "Inicial"
+    if dia <= li + ld:
+        return ci + (cm - ci) * (dia - li) / max(ld, 1), "Desarrollo"
+    if dia <= li + ld + lm:
+        return cm, "Media"
+    return cm + (cf - cm) * (dia - (li + ld + lm)) / max(ll, 1), "Final"
+
+
+def parsear_eto_agromet(file) -> tuple:
+    """Lee un xlsx de agrometeorologia.cl (Red INIA). Devuelve (df, estaciones).
+    df: columnas 'fecha' + una columna de ETo (mm) por estacion. Soporta varias
+    estaciones (cada una con su columna '... % de datos' que se ignora)."""
+    raw = pd.read_excel(file, header=None, engine="openpyxl")
+    hdr = None
+    for i in range(len(raw)):
+        v = str(raw.iloc[i, 0]).strip().lower()
+        if v.startswith("tiempo"):
+            hdr = i
+            break
+    if hdr is None:
+        raise ValueError("No se encontró la fila de encabezado ('Tiempo ...').")
+    header = raw.iloc[hdr].tolist()
+    data = raw.iloc[hdr + 1:].reset_index(drop=True)
+    estaciones = {}
+    for j in range(1, len(header)):
+        name = str(header[j]).strip()
+        low = name.lower()
+        if low in ("none", "nan", "") or low.endswith("% de datos"):
+            continue
+        estaciones[name] = j
+    if not estaciones:
+        raise ValueError("No se reconocieron columnas de estaciones de ETo.")
+    fechas = pd.to_datetime(data.iloc[:, 0].astype(str), dayfirst=True, errors="coerce")
+    out = pd.DataFrame({"fecha": fechas})
+    for name, j in estaciones.items():
+        out[name] = pd.to_numeric(
+            data.iloc[:, j].astype(str).str.replace(",", ".", regex=False),
+            errors="coerce")
+    out = out[out["fecha"].notna()].reset_index(drop=True)
+    return out, list(estaciones.keys())
+
+
+def construir_serie_diaria(crop, fecha_siembra, L, factores, eto_df, estacion,
+                           relleno="media") -> tuple:
+    """Serie diaria de la temporada: fecha, dia, etapa, Kc, ETo, ETc y oferta de
+    riego (factor de irrigacion por etapa x ETc). Rellena dias sin ETo medida.
+
+    Devuelve (serie, info) donde info trae cobertura y valor de relleno usado."""
+    li, ld, lm, ll = L
+    total = int(li + ld + lm + ll)
+    eto_map = {}
+    if eto_df is not None and estacion in eto_df.columns:
+        for _, r in eto_df.iterrows():
+            if pd.notna(r[estacion]):
+                eto_map[pd.Timestamp(r["fecha"]).date()] = float(r[estacion])
+    fechas = [fecha_siembra + timedelta(days=d) for d in range(total)]
+    medidos = [eto_map.get(f) for f in fechas]
+    disponibles = [v for v in medidos if v is not None]
+    if relleno == "media" and disponibles:
+        val_relleno = float(np.mean(disponibles))
+    elif isinstance(relleno, (int, float)):
+        val_relleno = float(relleno)
+    else:
+        val_relleno = float(np.mean(disponibles)) if disponibles else 0.0
+    filas = []
+    n_rellenos = 0
+    for d in range(1, total + 1):
+        fecha = fecha_siembra + timedelta(days=d - 1)
+        kc, etapa = kc_diario(crop, d, L)
+        medido = eto_map.get(fecha)
+        if medido is None:
+            eto = val_relleno
+            origen = "relleno"
+            n_rellenos += 1
+        else:
+            eto = medido
+            origen = "medido"
+        etc = kc * eto
+        f = float(factores.get(etapa, 1.0))
+        filas.append({
+            "dia": d, "fecha": fecha, "dia_semana": DIAS_SEMANA[fecha.weekday()],
+            "etapa": etapa, "Kc": round(kc, 3), "ETo_mm": round(eto, 2),
+            "origen_ETo": origen, "factor_riego": f,
+            "ETc_mm": round(etc, 3), "oferta_riego_mm": round(f * etc, 3)})
+    serie = pd.DataFrame(filas)
+    info = {"total_dias": total, "n_medidos": len(disponibles),
+            "n_rellenos": n_rellenos, "val_relleno": val_relleno,
+            "cobertura_pct": 100.0 * len(disponibles) / total if total else 0.0}
+    return serie, info
+
+
+def generar_calendario(serie, freq_etapa, dias_operativos, cfg_riego) -> pd.DataFrame:
+    """Calendario de riego propuesto a partir de la serie diaria.
+
+    Para cada dia acumula la lamina neta ajustada = oferta_riego x Kr - Pe (>=0).
+    Dispara un evento cuando los dias desde el ultimo riego alcanzan la frecuencia
+    de la etapa Y el dia es operativo. Si la frecuencia se cumple en dia no
+    operativo, sigue acumulando hasta el proximo dia operativo (conserva el agua).
+    El ultimo dia cierra el evento con lo acumulado.
+
+    lamina_bruta = lamina_neta / (Ea x Es) ; tiempo_h = lamina_bruta / PPeq."""
+    Ea = max(cfg_riego["Ea"], 1e-6)
+    Es = max(cfg_riego["Es"], 1e-6)
+    PPeq = cfg_riego["PPeq"]
+    Kr = cfg_riego["Kr"]
+    Pe = cfg_riego["Pe_mm_dia"]
+    eventos = []
+    acum_neta = 0.0
+    dias_desde = 0
+    etc_acum = 0.0
+    n = len(serie)
+    n_evt = 0
+    for idx, row in serie.iterrows():
+        neta_dia = max(row["oferta_riego_mm"] * Kr - Pe, 0.0)
+        acum_neta += neta_dia
+        etc_acum += row["ETc_mm"]
+        dias_desde += 1
+        etapa = row["etapa"]
+        freq = int(freq_etapa.get(etapa, 3))
+        fecha = row["fecha"]
+        operativo = fecha.weekday() in dias_operativos
+        es_ultimo = (idx == n - 1)
+        debe = dias_desde >= freq
+        if ((debe and operativo) or es_ultimo) and acum_neta > 1e-9:
+            n_evt += 1
+            lb = acum_neta / (Ea * Es)
+            t_h = lb / PPeq if PPeq > 0 else 0.0
+            eventos.append({
+                "evento": n_evt, "fecha": fecha,
+                "dia_semana": DIAS_SEMANA[fecha.weekday()],
+                "etapa": etapa, "intervalo_dias": dias_desde,
+                "ETc_acum_mm": round(etc_acum, 2),
+                "lamina_neta_mm": round(acum_neta, 2),
+                "lamina_bruta_mm": round(lb, 2),
+                "tiempo_riego_h": round(t_h, 2),
+                "incluir": True})
+            acum_neta = 0.0
+            dias_desde = 0
+            etc_acum = 0.0
+    return pd.DataFrame(eventos)
+
+
+def distribuir_nutrientes(cal, objetivos_ha, sup_ha, modo="agua") -> pd.DataFrame:
+    """Reparte los kg/ha objetivo de cada etapa entre los eventos de esa etapa.
+    modo='agua' -> proporcional a la lamina bruta (concentracion ~constante);
+    modo='igual' -> partes iguales por evento."""
+    cal = cal.copy()
+    for nut in MACROS_OBJETIVO:
+        cal[f"kg_{nut}"] = 0.0
+    for etapa in cal["etapa"].unique():
+        sub = cal[cal["etapa"] == etapa]
+        if sub.empty:
+            continue
+        if modo == "agua":
+            peso = sub["lamina_bruta_mm"].astype(float)
+        else:
+            peso = pd.Series(1.0, index=sub.index)
+        tot = float(peso.sum())
+        for nut in MACROS_OBJETIVO:
+            kg_ha = float(objetivos_ha.loc[etapa, nut]) if etapa in objetivos_ha.index else 0.0
+            kg_campo = kg_ha * sup_ha
+            if tot > 0:
+                cal.loc[sub.index, f"kg_{nut}"] = kg_campo * peso / tot
+    return cal
+
+
+def receta_evento(catalogo, kg_event, lamina_bruta_mm, sup_ha, disponibles,
+                  razon, ce_agua, ce_crit_gotero) -> dict:
+    """Receta de un evento de fertirriego. Resuelve los gramos totales (al campo)
+    para alcanzar los ppm objetivo en el gotero, derivados de los kg objetivo del
+    evento y del volumen de agua aplicado.
+
+    V_riego (L) = lamina_bruta_mm x sup_ha x 10000   (1 mm.ha = 10000 L)
+    ppm_gotero  = kg_nut x 1e6 / V_riego
+    El solver entrega los gramos para esos ppm sobre V_riego (= masa por evento).
+    Estanque madre: la solucion inyectada = V_riego / razon."""
+    V = float(lamina_bruta_mm) * float(sup_ha) * 10000.0
+    if V <= 0:
+        return None
+    objetivos_ppm = {n: (kg_event.get(n, 0.0) * 1e6 / V) for n in MACROS_OBJETIVO}
+    ce_cap = (ce_crit_gotero - ce_agua) if ce_crit_gotero and ce_crit_gotero > 0 else None
+    if ce_cap is not None and ce_cap <= 0:
+        ce_cap = 1e-6
+    try:
+        res = resolver_receta_objetivo(catalogo, objetivos_ppm, V, disponibles,
+                                       ce_cap_madre=ce_cap)
+    except Exception as e:
+        return {"error": str(e)}
+    if res is None or res["receta"].empty:
+        return {"error": "sin solución", "objetivos_ppm": objetivos_ppm}
+    sel = res["receta"].merge(catalogo, on="nombre", how="left")
+    ap = calcular_aportes(sel, V)
+    t = totales(ap, V)
+    V_madre = V / razon if razon else V
+    rec = res["receta"].copy()
+    rec["kg"] = rec["gramos"] / 1000.0
+    rec["g_L_madre"] = rec["gramos"] / V_madre if V_madre else np.nan
+    sel_m = rec.merge(catalogo[["nombre", "solubilidad_g_L"]], on="nombre", how="left")
+    sel_m["excede_solub"] = sel_m.apply(
+        lambda r: bool(pd.notna(r["solubilidad_g_L"]) and r["g_L_madre"] > r["solubilidad_g_L"]),
+        axis=1)
+    ce_gotero = ce_agua + t["CE"]
+    return {
+        "receta": rec, "solub": sel_m, "objetivos_ppm": objetivos_ppm,
+        "ppm_gotero": {e: t[e] for e in ELEMENTOS},
+        "ce_gotero": ce_gotero, "ce_madre_aprox": t["CE"] * razon,
+        "V_riego_L": V, "V_madre_L": V_madre,
+        "df_objetivo": res["df_objetivo"], "ce_limitada": res["ce_limitada"],
+        "alguno_excede": bool(sel_m["excede_solub"].any())}
+
+
+def exportar_excel_temporada(meta, serie, calendario, objetivos_ha,
+                             recetas_largo, ppm_largo, ce_eventos) -> bytes:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        pd.DataFrame(list(meta.items()), columns=["Parametro", "Valor"]).to_excel(
+            w, sheet_name="Cultivo", index=False)
+        serie.to_excel(w, sheet_name="Serie_diaria", index=False)
+        calendario.to_excel(w, sheet_name="Calendario", index=False)
+        objetivos_ha.reset_index().rename(columns={"index": "Etapa"}).to_excel(
+            w, sheet_name="Objetivos_kg_ha", index=False)
+        if recetas_largo is not None and not recetas_largo.empty:
+            recetas_largo.to_excel(w, sheet_name="Recetas_por_evento", index=False)
+        if ppm_largo is not None and not ppm_largo.empty:
+            ppm_largo.to_excel(w, sheet_name="PPM_gotero", index=False)
+        if ce_eventos is not None and not ce_eventos.empty:
+            ce_eventos.to_excel(w, sheet_name="CE_eventos", index=False)
+    return buf.getvalue()
+
+
+def _tab_cultivo():
+    st.markdown("**1 · Especie y etapas FAO-56**")
+    c0, c1 = st.columns([1.4, 1])
+    especie = c0.selectbox("Especie (Kc fijos en el código, editables abajo)",
+                           list(CROPS.keys()), key="temp_especie")
+    crop_base = CROPS[especie]
+    sup_ha = c1.number_input("Superficie (ha)", min_value=0.01, value=1.0, step=0.1,
+                             key="temp_sup_ha")
+    st.caption(crop_base["ref"])
+    cc = st.columns(4)
+    kc_ini = cc[0].number_input("Kc inicial", min_value=0.0, value=float(crop_base["kc_ini"]),
+                                step=0.05, key="temp_kc_ini")
+    kc_mid = cc[1].number_input("Kc medio", min_value=0.0, value=float(crop_base["kc_mid"]),
+                                step=0.05, key="temp_kc_mid")
+    kc_end = cc[2].number_input("Kc final", min_value=0.0, value=float(crop_base["kc_end"]),
+                                step=0.05, key="temp_kc_end")
+    p_ag = cc[3].number_input("p (agotamiento)", min_value=0.05, max_value=0.9,
+                              value=float(crop_base["p"]), step=0.05, key="temp_p")
+    cl = st.columns(4)
+    li = cl[0].number_input("L inicial (d)", min_value=1, value=int(crop_base["L_ini"]),
+                            step=1, key="temp_li")
+    ld = cl[1].number_input("L desarrollo (d)", min_value=1, value=int(crop_base["L_dev"]),
+                            step=1, key="temp_ld")
+    lm = cl[2].number_input("L media (d)", min_value=1, value=int(crop_base["L_mid"]),
+                            step=1, key="temp_lm")
+    ll = cl[3].number_input("L final (d)", min_value=1, value=int(crop_base["L_late"]),
+                            step=1, key="temp_ll")
+    fecha_siembra = st.date_input("Fecha de siembra / brotación", value=date(2026, 6, 1),
+                                  key="temp_fsiembra")
+    crop = {"kc_ini": kc_ini, "kc_mid": kc_mid, "kc_end": kc_end, "p": p_ag}
+    L = (li, ld, lm, ll)
+    total = li + ld + lm + ll
+    st.info(f"Temporada: {total} días "
+            f"({fecha_siembra:%d-%m-%Y} → {fecha_siembra + timedelta(days=total-1):%d-%m-%Y}). "
+            f"Etapas: Inicial {li} · Desarrollo {ld} · Media {lm} · Final {ll}.")
+    st.session_state["temp_crop"] = crop
+    st.session_state["temp_L"] = L
+    st.session_state["temp_total"] = total
+    st.session_state["temp_fecha"] = fecha_siembra
+    st.session_state["temp_sup"] = sup_ha
+    st.session_state["temp_especie_nombre"] = especie
+
+
+def _tab_eto():
+    st.markdown("**2 · ETo de referencia (formato agrometeorología.cl / Red INIA)**")
+    up = st.file_uploader("Sube el xlsx de ETo", type=["xlsx"], key="temp_eto_up")
+    if up is None:
+        st.info("Sube el archivo de Evapotranspiración para mapear la ETo a la temporada. "
+                "Mientras tanto puedes definir una ETo constante de respaldo abajo.")
+    eto_df, estaciones = None, []
+    if up is not None:
+        try:
+            eto_df, estaciones = parsear_eto_agromet(up)
+            st.success(f"ETo leída: {len(eto_df)} días · estaciones: {', '.join(estaciones)}.")
+            est = st.selectbox("Estación a usar", estaciones, key="temp_estacion")
+            vis = eto_df[["fecha", est]].dropna().rename(columns={est: "ETo_mm"})
+            c1, c2 = st.columns([1, 1.3])
+            with c1:
+                st.dataframe(vis.assign(fecha=vis["fecha"].dt.strftime("%d-%m-%Y")),
+                             use_container_width=True, hide_index=True, height=260)
+            with c2:
+                st.line_chart(vis.set_index("fecha")["ETo_mm"])
+                st.caption(f"ETo media medida: {vis['ETo_mm'].mean():.2f} mm/d · "
+                           f"min {vis['ETo_mm'].min():.2f} · máx {vis['ETo_mm'].max():.2f}.")
+            st.session_state["temp_eto_df"] = eto_df
+            st.session_state["temp_estacion_sel"] = est
+        except Exception as e:
+            st.error(f"No se pudo leer el archivo: {e}")
+            st.session_state.pop("temp_eto_df", None)
+    relleno_modo = st.radio(
+        "Relleno de días sin ETo medida (la temporada suele exceder los datos)",
+        ["Media de los días medidos", "Valor constante"], horizontal=True,
+        key="temp_relleno_modo")
+    if relleno_modo.startswith("Valor"):
+        st.session_state["temp_relleno"] = st.number_input(
+            "ETo de relleno (mm/d)", min_value=0.0, value=3.0, step=0.1,
+            key="temp_relleno_val")
+    else:
+        st.session_state["temp_relleno"] = "media"
+
+
+def _tab_oferta():
+    st.markdown("**3 · Oferta hídrica y oferta de riego (factor de irrigación por etapa)**")
+    if "temp_crop" not in st.session_state:
+        st.warning("Define primero el cultivo en la pestaña 1.")
+        return
+    st.caption("Factor de irrigación por etapa = fracción de la ETc a reponer "
+               "(p. ej. 0,7·ETc). La oferta de riego diaria = factor · Kc · ETo.")
+    cols = st.columns(4)
+    defaults = {"Inicial": 0.70, "Desarrollo": 0.85, "Media": 1.00, "Final": 0.80}
+    factores = {}
+    for i, etapa in enumerate(ETAPAS_FAO):
+        factores[etapa] = cols[i].number_input(
+            f"Factor {etapa}", min_value=0.0, max_value=2.0,
+            value=float(defaults[etapa]), step=0.05, key=f"temp_fac_{etapa}")
+    serie, info = construir_serie_diaria(
+        st.session_state["temp_crop"], st.session_state["temp_fecha"],
+        st.session_state["temp_L"], factores,
+        st.session_state.get("temp_eto_df"),
+        st.session_state.get("temp_estacion_sel", ""),
+        relleno=st.session_state.get("temp_relleno", "media"))
+    st.session_state["temp_serie"] = serie
+    st.session_state["temp_factores"] = factores
+
+    if info["cobertura_pct"] < 100:
+        st.warning(f"Cobertura de ETo medida: {info['cobertura_pct']:.0f}% "
+                   f"({info['n_medidos']}/{info['total_dias']} días). "
+                   f"Se rellenaron {info['n_rellenos']} días con "
+                   f"{info['val_relleno']:.2f} mm/d. Para planificación robusta usa una "
+                   "serie de ETo normal o histórica de la temporada completa.")
+    else:
+        st.success("ETo medida cubre toda la temporada.")
+
+    etc_tot = serie["ETc_mm"].sum()
+    oferta_tot = serie["oferta_riego_mm"].sum()
+    m = st.columns(4)
+    m[0].metric("ETc temporada", f"{etc_tot:.0f} mm")
+    m[1].metric("Oferta de riego (neta)", f"{oferta_tot:.0f} mm")
+    m[2].metric("ETc media", f"{serie['ETc_mm'].mean():.2f} mm/d")
+    m[3].metric("Sup. (ha)", f"{st.session_state['temp_sup']:.2f}")
+
+    st.markdown("**Curva diaria** (ETo, ETc y oferta de riego):")
+    st.line_chart(serie.set_index("fecha")[["ETo_mm", "ETc_mm", "oferta_riego_mm"]])
+    st.markdown("**Acumulado de la temporada:**")
+    acum = serie[["fecha"]].copy()
+    acum["ETc_acum_mm"] = serie["ETc_mm"].cumsum()
+    acum["Oferta_riego_acum_mm"] = serie["oferta_riego_mm"].cumsum()
+    st.line_chart(acum.set_index("fecha"))
+    resumen_etapa = (serie.groupby("etapa")
+                     .agg(dias=("dia", "count"), ETo_mm=("ETo_mm", "sum"),
+                          ETc_mm=("ETc_mm", "sum"), oferta_riego_mm=("oferta_riego_mm", "sum"))
+                     .reindex(ETAPAS_FAO).dropna(how="all"))
+    st.markdown("**Resumen por etapa (mm):**")
+    st.dataframe(resumen_etapa.round(1), use_container_width=True)
+    with st.expander("Ver serie diaria completa"):
+        st.dataframe(serie.assign(fecha=serie["fecha"].apply(lambda d: d.strftime("%d-%m-%Y"))),
+                     use_container_width=True, hide_index=True, height=320)
+
+
+def _tab_calendario():
+    st.markdown("**4 · Calendario de riego (mm y tiempo) — propuesto y editable**")
+    if "temp_serie" not in st.session_state:
+        st.warning("Genera primero la oferta hídrica en la pestaña 3.")
+        return
+    st.markdown("Parámetros del equipo y manejo:")
+    c = st.columns(4)
+    Ea = c[0].number_input("Eficiencia de aplicación", min_value=0.05, max_value=1.0,
+                           value=0.90, step=0.01, key="temp_Ea",
+                           help="Fracción del agua aplicada que queda disponible (riego "
+                                "localizado típico 0,85–0,95).")
+    Es = c[1].number_input("Eficiencia de almacenamiento", min_value=0.05, max_value=1.0,
+                           value=0.95, step=0.01, key="temp_Es",
+                           help="Fracción del agua que efectivamente se almacena en la "
+                                "zona radicular.")
+    PPeq = c[2].number_input("Precipitación del equipo PPeq (mm/h)", min_value=0.1,
+                             value=3.5, step=0.1, key="temp_PPeq",
+                             help="Lámina horaria que aplica el equipo (caudal/superficie).")
+    Kr = c[3].number_input("Kr (reducción localizada)", min_value=0.1, max_value=1.0,
+                           value=1.00, step=0.05, key="temp_Kr",
+                           help="Coeficiente de reducción por sombreamiento/mojado parcial "
+                                "en riego localizado.")
+    c2 = st.columns(4)
+    Pe = c2[0].number_input("Precipitación efectiva (mm/d)", min_value=0.0, value=0.0,
+                            step=0.5, key="temp_Pe",
+                            help="Aporte de lluvia que descuenta la lámina neta diaria.")
+    cfg_riego = {"Ea": Ea, "Es": Es, "PPeq": PPeq, "Kr": Kr, "Pe_mm_dia": Pe}
+
+    st.markdown("**Días operativos** (desmarca, p. ej., el domingo):")
+    cd = st.columns(7)
+    dias_operativos = set()
+    default_op = [True, True, True, True, True, True, False]
+    for i, dia in enumerate(DIAS_SEMANA):
+        if cd[i].checkbox(dia, value=default_op[i], key=f"temp_op_{i}"):
+            dias_operativos.add(i)
+    if not dias_operativos:
+        st.error("Selecciona al menos un día operativo.")
+        return
+
+    st.markdown("**Frecuencia de riego estimada por etapa (días entre riegos):**")
+    cf = st.columns(4)
+    freq_def = {"Inicial": 4, "Desarrollo": 3, "Media": 2, "Final": 3}
+    freq_etapa = {}
+    for i, etapa in enumerate(ETAPAS_FAO):
+        freq_etapa[etapa] = cf[i].number_input(
+            f"Frecuencia {etapa}", min_value=1, max_value=30,
+            value=int(freq_def[etapa]), step=1, key=f"temp_freq_{etapa}")
+
+    st.session_state["temp_cfg_riego"] = cfg_riego
+    if st.button("Generar / regenerar calendario propuesto", type="primary",
+                 key="temp_btn_cal"):
+        prop = generar_calendario(st.session_state["temp_serie"], freq_etapa,
+                                  dias_operativos, cfg_riego)
+        st.session_state["temp_cal_prop"] = prop
+        st.session_state.pop("temp_cal_edit", None)
+
+    if "temp_cal_prop" not in st.session_state:
+        st.info("Pulsa el botón para generar la propuesta de calendario.")
+        return
+
+    prop = st.session_state["temp_cal_prop"]
+    if prop.empty:
+        st.warning("No se generaron eventos: revisa frecuencias, días operativos o la "
+                   "oferta de riego (puede ser 0 si el factor o Kr son muy bajos).")
+        return
+
+    base = st.session_state.get("temp_cal_edit", prop).copy()
+    base["fecha"] = pd.to_datetime(base["fecha"])
+    st.caption("Edita fechas, láminas o tiempos; desmarca 'incluir' para saltar un riego. "
+               "Las recetas usarán esta tabla editada.")
+    edit = st.data_editor(
+        base, use_container_width=True, hide_index=True, num_rows="dynamic",
+        key="temp_cal_editor",
+        column_config={
+            "evento": st.column_config.NumberColumn("Evento", disabled=True),
+            "fecha": st.column_config.DateColumn("Fecha", format="DD-MM-YYYY"),
+            "dia_semana": st.column_config.TextColumn("Día", disabled=True),
+            "etapa": st.column_config.SelectboxColumn("Etapa", options=ETAPAS_FAO),
+            "intervalo_dias": st.column_config.NumberColumn("Interv. (d)"),
+            "ETc_acum_mm": st.column_config.NumberColumn("ETc acum (mm)", format="%.1f"),
+            "lamina_neta_mm": st.column_config.NumberColumn("Neta (mm)", format="%.2f"),
+            "lamina_bruta_mm": st.column_config.NumberColumn("Bruta (mm)", format="%.2f"),
+            "tiempo_riego_h": st.column_config.NumberColumn("Tiempo (h)", format="%.2f"),
+            "incluir": st.column_config.CheckboxColumn("Incluir")})
+    edit["fecha"] = pd.to_datetime(edit["fecha"]).dt.date
+    st.session_state["temp_cal_edit"] = edit
+
+    activos = edit[edit["incluir"] == True]
+    sup = st.session_state["temp_sup"]
+    vol_tot = (activos["lamina_bruta_mm"].sum() * sup * 10.0)
+    mm = st.columns(4)
+    mm[0].metric("N° de riegos", f"{len(activos)}")
+    mm[1].metric("Lámina bruta total", f"{activos['lamina_bruta_mm'].sum():.0f} mm")
+    mm[2].metric("Tiempo total", f"{activos['tiempo_riego_h'].sum():.1f} h")
+    mm[3].metric("Volumen temporada", f"{vol_tot:.0f} m³")
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        edit.to_excel(w, sheet_name="Calendario", index=False)
+    st.download_button("Descargar calendario en Excel", data=buf.getvalue(),
+                       file_name="calendario_riego.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key="temp_dl_cal")
+
+
+def _tab_nutricion():
+    st.markdown("**5 · Objetivos nutricionales (kg de nutriente por hectárea y etapa)**")
+    st.caption("Define el requerimiento de cada nutriente por etapa, en kg/ha. El total "
+               "de la temporada es la suma de las etapas (× superficie en el reparto).")
+    especie = st.session_state.get("temp_especie_nombre", "")
+    base = pd.DataFrame(OBJETIVO_NUTRI_DEFAULT).T.reindex(ETAPAS_FAO)[MACROS_OBJETIVO]
+    base.index.name = "Etapa"
+    if "temp_obj_nutri" in st.session_state:
+        guardado = st.session_state["temp_obj_nutri"]
+        base = guardado.reindex(ETAPAS_FAO)[MACROS_OBJETIVO]
+    edit = st.data_editor(
+        base, use_container_width=True, key="temp_nutri_editor",
+        column_config={n: st.column_config.NumberColumn(f"{n} (kg/ha)", min_value=0.0,
+                       step=1.0, format="%.1f") for n in MACROS_OBJETIVO})
+    st.session_state["temp_obj_nutri"] = edit
+    tot = edit.sum()
+    st.markdown("**Totales de temporada (kg/ha):**")
+    res = pd.DataFrame({"Nutriente": MACROS_OBJETIVO,
+                        "kg/ha": [tot[n] for n in MACROS_OBJETIVO]})
+    res["kg/ha (óxido)"] = [
+        tot["N"], tot["P"] / CFG["ox"]["P2O5_a_P"], tot["K"] / CFG["ox"]["K2O_a_K"],
+        tot["Ca"] / CFG["ox"]["CaO_a_Ca"], tot["Mg"] / CFG["ox"]["MgO_a_Mg"], tot["S"]]
+    res["forma óxido"] = ["N", "P2O5", "K2O", "CaO", "MgO", "S"]
+    st.dataframe(res.round(1), use_container_width=True, hide_index=True)
+    sup = st.session_state.get("temp_sup", 1.0)
+    st.caption(f"Para {sup:.2f} ha, el total de N sería "
+               f"{tot['N']*sup:.1f} kg, K {tot['K']*sup:.1f} kg, etc.")
+    st.bar_chart(edit)
+
+
+def _tab_recetas(catalogo, razon, ce_agua, hco3_agua):
+    st.markdown("**6 · Recetas de fertirriego por evento de riego**")
+    if "temp_cal_edit" not in st.session_state:
+        st.warning("Genera el calendario en la pestaña 4 antes de calcular recetas.")
+        return
+    if "temp_obj_nutri" not in st.session_state:
+        st.warning("Define los objetivos nutricionales en la pestaña 5.")
+        return
+
+    opciones = sorted(catalogo["nombre"].tolist())
+    default = [n for n in ferts_macro_por_defecto(catalogo) if n in opciones]
+    disponibles = st.multiselect("Fertilizantes disponibles para el solver",
+                                 options=opciones, default=default, key="temp_disp")
+    c = st.columns(3)
+    modo_rep = c[0].radio("Reparto del nutriente dentro de la etapa",
+                          ["Proporcional al agua", "Partes iguales"], key="temp_modo_rep")
+    ce_crit = c[1].number_input("CE crítica en gotero (dS/m)", min_value=0.0, value=0.0,
+                                step=0.1, key="temp_ce_crit",
+                                help="Tope de CE de la solución que recibe la planta. "
+                                     "0 = sin límite. Incluye la CE del agua.")
+    c[2].metric("CE agua / razón", f"{ce_agua:.2f} / 1:{razon}")
+    if not disponibles:
+        st.info("Selecciona al menos un fertilizante.")
+        return
+
+    if not st.button("Generar recetas de la temporada", type="primary",
+                     key="temp_btn_rec"):
+        st.stop()
+
+    cal = st.session_state["temp_cal_edit"].copy()
+    cal = cal[cal["incluir"] == True].reset_index(drop=True)
+    if cal.empty:
+        st.warning("No hay eventos activos en el calendario.")
+        return
+    sup = st.session_state["temp_sup"]
+    obj_ha = st.session_state["temp_obj_nutri"].reindex(ETAPAS_FAO)[MACROS_OBJETIVO]
+    modo = "agua" if modo_rep.startswith("Proporcional") else "igual"
+    cal = distribuir_nutrientes(cal, obj_ha, sup, modo=modo)
+
+    recetas_largo, ppm_largo, ce_rows = [], [], []
+    resumen_rows = []
+    detalles = []
+    barra = st.progress(0.0, text="Resolviendo recetas...")
+    n = len(cal)
+    for i, (_, ev) in enumerate(cal.iterrows()):
+        kg_event = {nut: float(ev[f"kg_{nut}"]) for nut in MACROS_OBJETIVO}
+        out = receta_evento(catalogo, kg_event, ev["lamina_bruta_mm"], sup,
+                            disponibles, razon, ce_agua, ce_crit)
+        barra.progress((i + 1) / n, text=f"Evento {int(ev['evento'])}/{n}")
+        if out is None or "error" in out:
+            resumen_rows.append({
+                "evento": int(ev["evento"]),
+                "fecha": ev["fecha"].strftime("%d-%m-%Y"),
+                "etapa": ev["etapa"], "estado": out.get("error", "sin volumen") if out else "sin volumen"})
+            detalles.append((ev, out, kg_event))
+            continue
+        for _, r in out["receta"].iterrows():
+            recetas_largo.append({
+                "evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
+                "etapa": ev["etapa"], "fertilizante": r["nombre"],
+                "gramos_total": round(r["gramos"], 1), "kg_total": round(r["kg"], 3),
+                "g_L_madre": round(r["g_L_madre"], 3)})
+        fila_ppm = {"evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
+                    "etapa": ev["etapa"]}
+        for e in ELEMENTOS:
+            fila_ppm[f"{e}_ppm_gotero"] = round(out["ppm_gotero"][e], 1)
+        ppm_largo.append(fila_ppm)
+        ce_rows.append({"evento": int(ev["evento"]),
+                        "fecha": ev["fecha"].strftime("%d-%m-%Y"), "etapa": ev["etapa"],
+                        "CE_gotero_dS_m": round(out["ce_gotero"], 2),
+                        "CE_madre_aprox_dS_m": round(out["ce_madre_aprox"], 2),
+                        "V_riego_L": round(out["V_riego_L"], 0),
+                        "V_madre_L": round(out["V_madre_L"], 1),
+                        "excede_solub_madre": out["alguno_excede"],
+                        "CE_limitada": out["ce_limitada"]})
+        resumen_rows.append({
+            "evento": int(ev["evento"]), "fecha": ev["fecha"].strftime("%d-%m-%Y"),
+            "etapa": ev["etapa"], "estado": "ok",
+            "CE_gotero": round(out["ce_gotero"], 2),
+            "masa_total_kg": round(out["receta"]["kg"].sum(), 2)})
+        detalles.append((ev, out, kg_event))
+    barra.empty()
+
+    recetas_largo = pd.DataFrame(recetas_largo)
+    ppm_largo = pd.DataFrame(ppm_largo)
+    ce_eventos = pd.DataFrame(ce_rows)
+    st.session_state["temp_recetas_largo"] = recetas_largo
+
+    st.subheader("Resumen por evento", anchor=False)
+    st.dataframe(pd.DataFrame(resumen_rows), use_container_width=True, hide_index=True)
+
+    if not recetas_largo.empty:
+        st.subheader("Masa total de fertilizante por temporada", anchor=False)
+        tot_fert = (recetas_largo.groupby("fertilizante")[["kg_total"]].sum()
+                    .sort_values("kg_total", ascending=False).round(2))
+        st.dataframe(tot_fert, use_container_width=True)
+        st.subheader("ppm a gotero por evento", anchor=False)
+        st.dataframe(ppm_largo, use_container_width=True, hide_index=True, height=300)
+        if not ce_eventos.empty:
+            st.line_chart(ce_eventos.set_index("fecha")["CE_gotero_dS_m"])
+            if ce_eventos["excede_solub_madre"].any():
+                st.warning("En algunos eventos la concentración en el estanque madre "
+                           "supera la solubilidad: sube el volumen del estanque madre, baja "
+                           "la razón de inyección o fracciona la inyección.")
+
+    st.subheader("Detalle por evento", anchor=False)
+    for ev, out, kg_event in detalles:
+        etiqueta = f"Evento {int(ev['evento'])} · {ev['fecha']:%d-%m-%Y} · {ev['etapa']} · " \
+                   f"{ev['lamina_bruta_mm']:.1f} mm · {ev['tiempo_riego_h']:.1f} h"
+        with st.expander(etiqueta):
+            if out is None or "error" in out:
+                st.error("No se resolvió: " + (out.get("error", "sin volumen") if out else "sin volumen"))
+                continue
+            cc = st.columns(4)
+            cc[0].metric("CE gotero", f"{out['ce_gotero']:.2f} dS/m")
+            cc[1].metric("CE madre ~", f"{out['ce_madre_aprox']:.2f} dS/m")
+            cc[2].metric("V riego", f"{out['V_riego_L']:.0f} L")
+            cc[3].metric("V madre/evento", f"{out['V_madre_L']:.0f} L")
+            vista = out["receta"][["nombre", "gramos", "kg", "g_L_madre"]].rename(
+                columns={"nombre": "Fertilizante", "gramos": "g (total)",
+                         "kg": "kg (total)", "g_L_madre": "g/L (madre)"})
+            st.dataframe(vista.round({"g (total)": 1, "kg (total)": 3, "g/L (madre)": 3}),
+                         use_container_width=True, hide_index=True)
+            ppm_df = pd.DataFrame({
+                "Nutriente": ELEMENTOS,
+                "Objetivo gotero (ppm)": [round(out["objetivos_ppm"].get(e, 0), 1)
+                                          if e in MACROS_OBJETIVO else 0 for e in ELEMENTOS],
+                "Logrado gotero (ppm)": [round(out["ppm_gotero"][e], 1) for e in ELEMENTOS],
+                "kg objetivo evento": [round(kg_event.get(e, 0), 3)
+                                       if e in MACROS_OBJETIVO else 0 for e in ELEMENTOS]})
+            st.dataframe(ppm_df, use_container_width=True, hide_index=True)
+            if out["alguno_excede"]:
+                st.warning("Concentración en madre supera la solubilidad de algún producto.")
+
+    meta = {
+        "Especie": st.session_state.get("temp_especie_nombre", ""),
+        "Superficie (ha)": sup,
+        "Fecha siembra": st.session_state["temp_fecha"].strftime("%d-%m-%Y"),
+        "Razón de inyección": f"1:{razon}", "CE agua (dS/m)": ce_agua,
+        "HCO3 agua (mg/L)": hco3_agua, "CE crítica gotero (dS/m)": ce_crit,
+        "Reparto": modo_rep, "N eventos": len(cal)}
+    xls = exportar_excel_temporada(
+        meta, st.session_state["temp_serie"], st.session_state["temp_cal_edit"],
+        obj_ha, recetas_largo, ppm_largo, ce_eventos)
+    st.download_button("Descargar temporada completa en Excel", data=xls,
+                       file_name="fertirriego_temporada.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key="temp_dl_full")
+
+
+def modo_temporada(catalogo, volumen_L, razon, ce_agua, hco3_agua):
+    st.caption("Flujo de temporada: cultivo y Kc FAO-56 → ETo → oferta hídrica → "
+               "calendario de riego editable → objetivos nutricionales → recetas por evento.")
+    tabs = st.tabs(["1 · Cultivo (FAO-56)", "2 · ETo", "3 · Oferta hídrica",
+                    "4 · Calendario", "5 · Objetivos nutri.", "6 · Recetas"])
+    with tabs[0]:
+        _tab_cultivo()
+    with tabs[1]:
+        _tab_eto()
+    with tabs[2]:
+        _tab_oferta()
+    with tabs[3]:
+        _tab_calendario()
+    with tabs[4]:
+        _tab_nutricion()
+    with tabs[5]:
+        _tab_recetas(catalogo, razon, ce_agua, hco3_agua)
+
+
 _OCULTAR_UI = """
 <style>
 [data-testid="stToolbar"] {visibility: hidden; height: 0; position: fixed;}
@@ -812,16 +1550,20 @@ def main():
     st.markdown(_OCULTAR_UI, unsafe_allow_html=True)
     st.title(CFG["titulo"], anchor=False)
     st.caption("Calcula concentraciones, CE, compatibilidad y pH. "
-               "Modo directo (dosis → resultado) o inverso (objetivo → receta).")
+               "Modo directo (dosis → resultado), inverso (objetivo → receta) "
+               "o temporada (FAO-56 → calendario de riego → recetas por evento).")
     volumen_L, razon, ce_agua, hco3_agua, catalogo = sidebar_config()
     modo = st.radio("Modo de trabajo",
-                    ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)"],
+                    ["Directo  (dosis → resultado)", "Inverso  (objetivo → receta)",
+                     "Temporada  (FAO-56 → calendario → recetas)"],
                     horizontal=True)
     st.divider()
     if modo.startswith("Directo"):
         modo_directo(catalogo, volumen_L, razon, ce_agua, hco3_agua)
-    else:
+    elif modo.startswith("Inverso"):
         modo_inverso(catalogo, volumen_L, razon, ce_agua, hco3_agua)
+    else:
+        modo_temporada(catalogo, volumen_L, razon, ce_agua, hco3_agua)
     st.divider()
     st.caption("La CE usa factores empíricos por sal (g/L→dS/m); la urea no aporta CE. "
                "El pH es indicativo. El solver minimiza el error relativo sin masas "
